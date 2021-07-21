@@ -160,6 +160,7 @@ DocPgsqlScanSpec::DocPgsqlScanSpec(
     // Should never get here until WHERE clause is supported.
     LOG(FATAL) << "DEVELOPERS: Add support for condition (where clause)";
   }
+  range_bounds_indexes_ = range_bounds_->GetColIds();
 
   // If the hash key is fixed and we have range columns with IN condition, try to construct the
   // exact list of range options to scan for.
@@ -212,6 +213,7 @@ void DocPgsqlScanSpec::InitRangeOptions(const PgsqlConditionPB& condition) {
       }
 
       SortingType sortingType = schema_.column(col_idx).sorting_type();
+      range_options_indexes_.push_back(col_idx);
 
       if (condition.op() == QL_OP_EQUAL) {
         auto pv = PrimitiveValue::FromQLValuePB(condition.operands(1).value(), sortingType);

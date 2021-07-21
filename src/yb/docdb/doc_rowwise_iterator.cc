@@ -339,6 +339,10 @@ class RangeBasedScanChoices : public ScanChoices {
  private:
   std::vector<PrimitiveValue> lower_, upper_;
   KeyBytes prev_scan_target_;
+
+  std::vector<std::vector<PrimitiveValue>> range_cols_scan_options_lower_;
+  std::vector<std::vector<PrimitiveValue>> range_cols_scan_options_upper_;
+  mutable std::vector<std::vector<PrimitiveValue>::const_iterator> current_scan_target_idxs_;
 };
 
 Status RangeBasedScanChoices::SkipTargetsUpTo(const Slice& new_target) {
