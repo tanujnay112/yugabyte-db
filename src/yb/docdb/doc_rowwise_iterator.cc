@@ -328,7 +328,6 @@ class HybridScanChoices : public ScanChoices {
     range_options_indexes_ = doc_spec.range_options_indexes();
     range_cols_scan_options_lower_.reserve(schema.num_range_key_columns());
     range_cols_scan_options_upper_.reserve(schema.num_range_key_columns());
-    int options_idx = 0;
 
     size_t num_hash_cols = schema.num_hash_key_columns();
 
@@ -352,14 +351,13 @@ class HybridScanChoices : public ScanChoices {
       } else {
         DCHECK(std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
                 != range_options_indexes_.end());
-        auto &options = (*range_cols_scan_options)[options_idx];
+        auto &options = (*range_cols_scan_options)[idx];
         for (auto val : options) {
           const auto lower = val;
           const auto upper = val;
           range_cols_scan_options_lower_[idx - num_hash_cols].push_back(lower);
           range_cols_scan_options_upper_[idx - num_hash_cols].push_back(upper);
         }
-        options_idx++;
       }
     }
 
@@ -1045,7 +1043,7 @@ Result<bool> DocRowwiseIterator::HasNext() const {
     } else {
       doc_found = *doc_found_res;
     }
-    if (scan_choices_ && !is_static_column) {
+    if (scan_choices_ && !is_static_column && !scan_choices_->CurrentTargetMatchesKey(row_key_)) {
       has_next_status_ = scan_choices_->DoneWithCurrentTarget();
       RETURN_NOT_OK(has_next_status_);
     }
