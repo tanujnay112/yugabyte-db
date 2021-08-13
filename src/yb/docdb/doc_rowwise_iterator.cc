@@ -318,7 +318,6 @@ class HybridScanChoices : public ScanChoices {
   template <class ScanSpec>
   HybridScanChoices(const Schema& schema, const ScanSpec& doc_spec)
       : ScanChoices(doc_spec.is_forward_scan()) {
-    DCHECK(doc_spec.range_bounds());
     lower_.reserve(schema.num_range_key_columns());
     upper_.reserve(schema.num_range_key_columns());
 
@@ -335,7 +334,7 @@ class HybridScanChoices : public ScanChoices {
       const ColumnId col_idx = schema.column_id(idx);
       range_cols_scan_options_lower_.push_back({});
       range_cols_scan_options_upper_.push_back({});
-      if ((std::find(range_bounds_indexes_.begin(), range_bounds_indexes_.end(), col_idx) 
+      if ((std::find(range_bounds_indexes_.begin(), range_bounds_indexes_.end(), col_idx)
             != range_bounds_indexes_.end())
             && (std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
                 == range_options_indexes_.end())) {
@@ -349,14 +348,22 @@ class HybridScanChoices : public ScanChoices {
         range_cols_scan_options_lower_[idx - num_hash_cols].push_back(lower);
         range_cols_scan_options_upper_[idx - num_hash_cols].push_back(upper);
       } else {
-        DCHECK(std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
-                != range_options_indexes_.end());
-        auto &options = (*range_cols_scan_options)[idx];
-        for (auto val : options) {
-          const auto lower = val;
-          const auto upper = val;
-          range_cols_scan_options_lower_[idx - num_hash_cols].push_back(lower);
-          range_cols_scan_options_upper_[idx - num_hash_cols].push_back(upper);
+        if(std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
+                != range_options_indexes_.end()){
+          auto &options = (*range_cols_scan_options)[idx];
+          for (auto val : options) {
+            const auto lower = val;
+            const auto upper = val;
+            range_cols_scan_options_lower_[idx
+              - num_hash_cols].push_back(lower);
+            range_cols_scan_options_upper_[idx
+              - num_hash_cols].push_back(upper);
+          }
+        } else {
+            range_cols_scan_options_lower_[idx
+              - num_hash_cols].push_back(PrimitiveValue(ValueType::kLowest));
+            range_cols_scan_options_upper_[idx
+              - num_hash_cols].push_back(PrimitiveValue(ValueType::kHighest));
         }
       }
     }
@@ -425,7 +432,6 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
 
   int col_idx = 0;
   PrimitiveValue target_value;
-  bool last_was_infinity = false;
   for (col_idx = 0; col_idx < current_scan_target_idxs_.size(); col_idx++) {
     RETURN_NOT_OK(decoder.DecodePrimitiveValue(&target_value));
     VLOG(3) << "col_idx " << col_idx << " is " << target_value << " in ["
@@ -443,81 +449,69 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       continue;
     }
 
-    // If it's above the range then we must go to the next option?
-    // If it's below the range then we must also go to the next option?
-    // Then we check overflow conditions
-    if (target_value < lower) {
-      const auto tgt = (is_forward_scan_ ? lower : PrimitiveValue(ValueType::kLowest));
-      tgt.AppendToKey(&current_scan_target_);
-      last_was_infinity = tgt.IsInfinity();
-      VLOG(3) << " Updating idx " << col_idx << " from " << target_value << " to " << tgt;
-      auto it = lower_choices.begin();
-      size_t ind = current_ind;
-      if (is_forward_scan_) {
-        it = std::lower_bound(lower_choices.begin(), lower_choices.end(), target_value);
-        ind = it - lower_choices.begin();
-      } else {
-        it = std::lower_bound(upper_choices.begin(), upper_choices.end(), target_value, std::greater<>());
-        ind = it - upper_choices.begin();
-      }
+    // No, if it's not in the current range then we must find a range that
+    // works for it
+    // if we are above all ranges then increment previous index
+    // if we are below all ranges, that's fine, find the lowest range and put
+    // that in
+    // else, if it doesn't fit in a range, find the lowest lower bound and
+    // throw that out
 
-      current_scan_target_idxs_[col_idx] = ind;
+    // just gonna assume we sort by asc lower bound for forward scans for now
+    // am also assuming all ranges are disjoint
+    // also assuming we sort ranges in descending order for backward scans
 
-      if (ind == lower_choices.size()) {
-        DCHECK(!is_forward_scan_);
-
-        // is it this or KLowest
-        RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1));
-      }
-      break;
+    // find a range that fits us
+    auto it = lower_choices.begin();
+    size_t ind = 0;
+    if (is_forward_scan_){
+      it = std::lower_bound(upper_choices.begin(), upper_choices.end(), target_value);
+      ind = it - upper_choices.begin();
+      DCHECK(upper_choices[ind] >= target_value);
+    } else {
+      it = std::lower_bound(lower_choices.begin(), lower_choices.end(), target_value, std::greater<>());
+      ind = it - lower_choices.begin();
+      DCHECK(lower_choices[ind] <=target_value);
     }
-    
-    if (target_value > upper) {
-      const auto tgt = (!is_forward_scan_ ? upper : PrimitiveValue(ValueType::kHighest));
-      tgt.AppendToKey(&current_scan_target_);
-      last_was_infinity = tgt.IsInfinity();
-      VLOG(3) << " Updating idx " << col_idx << " from " << target_value << " to " << tgt;
-      auto it = lower_choices.begin();
-      size_t ind = current_ind;
-      if (is_forward_scan_) {
-        it = std::lower_bound(lower_choices.begin(), lower_choices.end(), target_value);
-        ind = it - lower_choices.begin();
-      } else {
-        it = std::lower_bound(upper_choices.begin(), upper_choices.end(), target_value, std::greater<>());
-        ind = it - upper_choices.begin();
-      }
 
-      current_scan_target_idxs_[col_idx] = ind;
-
-      if (ind == lower_choices.size()) {
-        DCHECK(is_forward_scan_);
-
-        // is it this or KLowest
-        RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1));
-      } 
+    if (ind == lower_choices.size()) {
+      // target value is higher than all range options and we need to increment
+      RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1));
       break;
     }
 
-    // Target column is in the current range
-    target_value.AppendToKey(&current_scan_target_);
-    last_was_infinity = target_value.IsInfinity();
+    // if we are within a range then target value itself should work
+    if (lower_choices[ind] <= target_value
+        && upper_choices[ind] >= target_value) {
+      target_value.AppendToKey(&current_scan_target_);
+      current_scan_target_idxs_[col_idx] = ind;
+      continue;
+    }
+
+    // otherwise we must set it to the next lower bound
+    // again, this only works as we are assuming all given ranges are
+    // disjoint
+
+    DCHECK((is_forward_scan_ && lower_choices[ind] > target_value) || (!is_forward_scan_ && upper_choices[ind] < target_value));
+
+    if (is_forward_scan_) {
+      lower_choices[ind].AppendToKey(&current_scan_target_);
+    } else {
+      upper_choices[ind].AppendToKey(&current_scan_target_);
+    }
+    current_scan_target_idxs_[col_idx] = ind;
+    col_idx++;
+    break;
   }
 
   // Reset the remaining range columns to kHighest/lower for forward scans
   // or kLowest/upper for backward scans.
-  while (++col_idx < lower_.size()) {
-    if (last_was_infinity) {
-      // No point having more components after +/- Inf.
-      break;
-    }
+  for (size_t i = col_idx; i < range_cols_scan_options_lower_.size(); i++) {
+    current_scan_target_idxs_[i] = 0;
     if (is_forward_scan_) {
-      VLOG(3) << " Updating col_idx " << col_idx << " to " << lower_[col_idx];
-      lower_[col_idx].AppendToKey(&current_scan_target_);
-      last_was_infinity = lower_[col_idx].IsInfinity();
+      range_cols_scan_options_lower_[col_idx][0].AppendToKey(&current_scan_target_);
     } else {
-      VLOG(3) << " Updating col_idx " << col_idx << " to " << upper_[col_idx];
-      upper_[col_idx].AppendToKey(&current_scan_target_);
-      last_was_infinity = upper_[col_idx].IsInfinity();
+      range_cols_scan_options_upper_[col_idx][0].AppendToKey(&current_scan_target_);
     }
   }
 
@@ -531,9 +525,12 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
   // DCHECK_LE(start_col, current_scan_target_idxs_.size());
 
   // Increment start col, move backwards in case of overflow.
-  size_t col_idx = start_col;
+  int col_idx = start_col;
+  auto &extremal_vector = is_forward_scan_
+                          ? range_cols_scan_options_lower_
+                            : range_cols_scan_options_upper_;
   for (; col_idx >= 0; col_idx--) {
-    const auto& choices = range_cols_scan_options_lower_[col_idx];
+    const auto& choices = extremal_vector[col_idx];
     auto it = current_scan_target_idxs_[col_idx];
 
     if (++it != choices.size()) {
@@ -559,8 +556,8 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
       decoder.left_input().cdata() - current_scan_target_.AsSlice().cdata());
 
   for (size_t i = col_idx; i <= start_col; ++i) {
-   range_cols_scan_options_lower_[i][current_scan_target_idxs_[i]]
-                                  .AppendToKey(&current_scan_target_);
+      extremal_vector[i][current_scan_target_idxs_[i]]
+                                      .AppendToKey(&current_scan_target_);
   }
 
   return Status::OK();
@@ -759,7 +756,7 @@ Status RangeBasedScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) 
       VLOG(3) << __PRETTY_FUNCTION__ << " current_scan_target_ is non-empty. "
               << current_scan_target_;
       if (is_forward_scan_) {
-        VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << current_scan_target_;
+        VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << DocKey::DebugSliceToString(current_scan_target_);
         db_iter->Seek(current_scan_target_);
       } else {
         auto tmp = current_scan_target_;
@@ -847,17 +844,7 @@ Result<bool> DocRowwiseIterator::InitScanChoices(
 Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocPgsqlScanSpec& doc_spec, const KeyBytes& lower_doc_key,
     const KeyBytes& upper_doc_key) {
-  if (doc_spec.range_options()) {
-    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec));
-    // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
-    // RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
-    return false;
-  }
-
-  if (doc_spec.range_bounds()) {
-    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec));
-  }
-
+  scan_choices_.reset(new HybridScanChoices(schema_, doc_spec));
   return false;
 }
 
@@ -970,7 +957,6 @@ Result<bool> DocRowwiseIterator::HasNext() const {
     }
 
     VLOG(4) << "*fetched_key is " << SubDocKey::DebugSliceToString(key_data->key);
-
     if (debug_dump_) {
       LOG(INFO) << __func__ << ", fetched key: " << SubDocKey::DebugSliceToString(key_data->key)
                 << ", " << key_data->key.ToDebugHexString();

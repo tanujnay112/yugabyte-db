@@ -77,7 +77,7 @@ class QLScanRange {
       col_id_list.push_back(it.first);
     }
     return col_id_list;
-  } 
+  }
 
   bool has_in_range_options() const {
     return has_in_range_options_;
