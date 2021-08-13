@@ -330,7 +330,7 @@ class HybridScanChoices : public ScanChoices {
 
     size_t num_hash_cols = schema.num_hash_key_columns();
 
-    for (idx = schema.num_hash_key_columns();idx < schema.num_key_columns();idx++) {
+    for (idx = schema.num_hash_key_columns(); idx < schema.num_key_columns(); idx++) {
       const ColumnId col_idx = schema.column_id(idx);
       range_cols_scan_options_lower_.push_back({});
       range_cols_scan_options_upper_.push_back({});
@@ -349,7 +349,7 @@ class HybridScanChoices : public ScanChoices {
         range_cols_scan_options_upper_[idx - num_hash_cols].push_back(upper);
       } else {
         if(std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
-                != range_options_indexes_.end()){
+                != range_options_indexes_.end()) {
           auto &options = (*range_cols_scan_options)[idx];
           for (auto val : options) {
             const auto lower = val;
@@ -379,16 +379,20 @@ class HybridScanChoices : public ScanChoices {
   CHECKED_STATUS DoneWithCurrentTarget() override;
   CHECKED_STATUS SeekToCurrentTarget(IntentAwareIterator* db_iter) override;
 
-  protected:
-  // Utility function for (multi)key scans. Updates the target scan key by incrementing the option
-  // index for one column. Will handle overflow by setting current column index to 0 and
-  // incrementing the previous column instead. If it overflows at first column it means we are done,
-  // so it clears the scan target idxs array.
+ protected:
+  // Utility function for (multi)key scans. Updates the target scan key by
+  // incrementing the option
+  // index for one column. Will handle overflow by setting current column
+  // index to 0 and incrementing the previous column instead. If it overflows
+  // at first column it means we are done, so it clears the scan target idxs
+  // array.
   CHECKED_STATUS IncrementScanTargetAtColumn(size_t start_col);
 
-  // Utility function for (multi)key scans to initialize the range portion of the current scan
+  // Utility function for (multi)key scans to initialize the range portion of
+  // the current scan
   // target, scan target with the first option.
-  // Only needed for scans that include the static row, otherwise Init will take care of this.
+  // Only needed for scans that include the static row, otherwise Init will
+  // take care of this.
   Result<bool> InitScanTargetRangeGroupIfNeeded();
 
  private:
@@ -464,12 +468,13 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     // find a range that fits us
     auto it = lower_choices.begin();
     size_t ind = 0;
-    if (is_forward_scan_){
+    if (is_forward_scan_) {
       it = std::lower_bound(upper_choices.begin(), upper_choices.end(), target_value);
       ind = it - upper_choices.begin();
       DCHECK(upper_choices[ind] >= target_value);
     } else {
-      it = std::lower_bound(lower_choices.begin(), lower_choices.end(), target_value, std::greater<>());
+      it = std::lower_bound(lower_choices.begin(), lower_choices.end(),
+              target_value, std::greater<>());
       ind = it - lower_choices.begin();
       DCHECK(lower_choices[ind] <=target_value);
     }
@@ -492,7 +497,9 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     // again, this only works as we are assuming all given ranges are
     // disjoint
 
-    DCHECK((is_forward_scan_ && lower_choices[ind] > target_value) || (!is_forward_scan_ && upper_choices[ind] < target_value));
+    DCHECK((is_forward_scan_ && lower_choices[ind] > target_value)
+              || (!is_forward_scan_ && upper_choices[ind]
+              < target_value));
 
     if (is_forward_scan_) {
       lower_choices[ind].AppendToKey(&current_scan_target_);
@@ -663,7 +670,7 @@ class RangeBasedScanChoices : public ScanChoices {
   CHECKED_STATUS DoneWithCurrentTarget() override;
   CHECKED_STATUS SeekToCurrentTarget(IntentAwareIterator* db_iter) override;
 
-  private:
+ private:
   std::vector<PrimitiveValue> lower_, upper_;
   KeyBytes prev_scan_target_;
 };
@@ -753,10 +760,13 @@ Status RangeBasedScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) 
 
   if (!FinishedWithScanChoices()) {
     if (!current_scan_target_.empty()) {
-      VLOG(3) << __PRETTY_FUNCTION__ << " current_scan_target_ is non-empty. "
+      VLOG(3) << __PRETTY_FUNCTION__
+              << " current_scan_target_ is non-empty. "
               << current_scan_target_;
       if (is_forward_scan_) {
-        VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << DocKey::DebugSliceToString(current_scan_target_);
+        VLOG(3) << __PRETTY_FUNCTION__
+                << " Seeking to "
+                << DocKey::DebugSliceToString(current_scan_target_);
         db_iter->Seek(current_scan_target_);
       } else {
         auto tmp = current_scan_target_;
