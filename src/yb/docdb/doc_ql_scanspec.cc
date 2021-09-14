@@ -76,7 +76,6 @@ DocQLScanSpec::DocQLScanSpec(
     range_options_ =
         std::make_shared<std::vector<std::vector<PrimitiveValue>>>(schema_.num_range_key_columns());
     InitRangeOptions(*condition);
-
   }
 }
 

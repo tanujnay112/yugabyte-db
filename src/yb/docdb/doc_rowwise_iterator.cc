@@ -145,7 +145,7 @@ class DiscreteScanChoices : public ScanChoices {
   CHECKED_STATUS SeekToCurrentTarget(IntentAwareIterator* db_iter) override;
 
  protected:
-  // Utility function for (multi)key scans. Updates the target scan key by `rementing the option
+  // Utility function for (multi)key scans. Updates the target scan key by incrementing the option
   // index for one column. Will handle overflow by setting current column index to 0 and
   // incrementing the previous column instead. If it overflows at first column it means we are done,
   // so it clears the scan target idxs array.
@@ -350,7 +350,7 @@ class HybridScanChoices : public ScanChoices {
       } else {
         if(std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
                 != range_options_indexes_.end()) {
-          auto &options = (*range_cols_scan_options)[idx];
+          auto &options = (*range_cols_scan_options)[idx - num_hash_cols];
           for (auto val : options) {
             const auto lower = val;
             const auto upper = val;
@@ -370,9 +370,15 @@ class HybridScanChoices : public ScanChoices {
 
     current_scan_target_idxs_.resize(range_cols_scan_options_lower_.size());
 
-    for (int i = 0; i < range_cols_scan_options_lower_.size(); i++) {
-      current_scan_target_idxs_[i] = 0;
+    if (is_forward_scan_){
+      current_scan_target_ = lower_doc_key;
+    } else {
+      current_scan_target_ = upper_doc_key;
     }
+
+    FixRanges();
+
+    CHECK_OK(SkipTargetsUpTo(current_scan_target_));
   }
 
   CHECKED_STATUS SkipTargetsUpTo(const Slice& new_target) override;
@@ -394,6 +400,8 @@ class HybridScanChoices : public ScanChoices {
   // Only needed for scans that include the static row, otherwise Init will
   // take care of this.
   Result<bool> InitScanTargetRangeGroupIfNeeded();
+
+  Result<bool> FixRanges();
 
  private:
   std::vector<PrimitiveValue> lower_, upper_;
@@ -568,6 +576,10 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
   }
 
   return Status::OK();
+}
+
+Result<bool> FixRanges() {
+   return 
 }
 
 Status HybridScanChoices::DoneWithCurrentTarget() {
@@ -854,7 +866,7 @@ Result<bool> DocRowwiseIterator::InitScanChoices(
 Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocPgsqlScanSpec& doc_spec, const KeyBytes& lower_doc_key,
     const KeyBytes& upper_doc_key) {
-  scan_choices_.reset(new HybridScanChoices(schema_, doc_spec));
+  scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   return false;
 }
 
