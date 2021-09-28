@@ -160,8 +160,7 @@ Status QLRocksDBStorage::GetIterator(const PgsqlReadRequestPB& request,
   auto doc_iter = std::make_unique<DocRowwiseIterator>(
       projection, schema, txn_op_context, doc_db_, deadline, read_time);
 
-  if (range_components.size() == schema.num_range_key_columns()
-    && !request.has_condition_expr()) {
+  if (range_components.size() == schema.num_range_key_columns()) {
     // Construct the scan spec basing on the RANGE condition as all range columns are specified.
     RETURN_NOT_OK(doc_iter->Init(DocPgsqlScanSpec(
         schema,

@@ -375,10 +375,11 @@ class HybridScanChoices : public ScanChoices {
     } else {
       current_scan_target_ = upper_doc_key;
     }
+    // current_scan_target_.AppendValueType(ValueType::kGroupEnd);
 
-    FixRanges();
+    // FixRanges();
 
-    CHECK_OK(SkipTargetsUpTo(current_scan_target_));
+    // CHECK_OK(SkipTargetsUpTo(current_scan_target_));
   }
 
   CHECKED_STATUS SkipTargetsUpTo(const Slice& new_target) override;
@@ -401,7 +402,7 @@ class HybridScanChoices : public ScanChoices {
   // take care of this.
   Result<bool> InitScanTargetRangeGroupIfNeeded();
 
-  Result<bool> FixRanges();
+  // Result<bool> FixRanges();
 
  private:
   std::vector<PrimitiveValue> lower_, upper_;
@@ -484,7 +485,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       it = std::lower_bound(lower_choices.begin(), lower_choices.end(),
               target_value, std::greater<>());
       ind = it - lower_choices.begin();
-      DCHECK(lower_choices[ind] <=target_value);
+      DCHECK(lower_choices[ind] <= target_value);
     }
 
     if (ind == lower_choices.size()) {
@@ -524,9 +525,9 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   for (size_t i = col_idx; i < range_cols_scan_options_lower_.size(); i++) {
     current_scan_target_idxs_[i] = 0;
     if (is_forward_scan_) {
-      range_cols_scan_options_lower_[col_idx][0].AppendToKey(&current_scan_target_);
+      range_cols_scan_options_lower_[col_idx][i].AppendToKey(&current_scan_target_);
     } else {
-      range_cols_scan_options_upper_[col_idx][0].AppendToKey(&current_scan_target_);
+      range_cols_scan_options_upper_[col_idx][i].AppendToKey(&current_scan_target_);
     }
   }
 
@@ -579,7 +580,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
 }
 
 Result<bool> FixRanges() {
-   return 
+   return true;
 }
 
 Status HybridScanChoices::DoneWithCurrentTarget() {
@@ -866,7 +867,15 @@ Result<bool> DocRowwiseIterator::InitScanChoices(
 Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocPgsqlScanSpec& doc_spec, const KeyBytes& lower_doc_key,
     const KeyBytes& upper_doc_key) {
-  scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
+
+  if (doc_spec.range_options()) {
+    scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
+    RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
+    return true;
+  }
+  if (doc_spec.range_bounds()) {
+    scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
+  }
   return false;
 }
 
