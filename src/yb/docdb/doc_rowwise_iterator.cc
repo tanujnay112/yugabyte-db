@@ -488,7 +488,15 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
 
     if (ind == lower_choices.size()) {
       // target value is higher than all range options and we need to increment
-      RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1));
+      if (col_idx == 0) {
+        finished_ = true;
+      }
+      if (is_forward_scan_) {
+        PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
+      } else {
+        PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
+      }
+      col_idx++;
       break;
     }
 
@@ -624,9 +632,9 @@ Status HybridScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
   if (!FinishedWithScanChoices()) {
     if (!current_scan_target_.empty()) {
       VLOG(3) << __PRETTY_FUNCTION__ << " current_scan_target_ is non-empty. "
-              << current_scan_target_;
+              << DocKey::DebugSliceToString(current_scan_target_);
       if (is_forward_scan_) {
-        VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << current_scan_target_;
+        VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << DocKey::DebugSliceToString(current_scan_target_);
         db_iter->Seek(current_scan_target_);
       } else {
         auto tmp = current_scan_target_;
@@ -868,7 +876,11 @@ Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocPgsqlScanSpec& doc_spec, const KeyBytes& lower_doc_key,
     const KeyBytes& upper_doc_key) {
 
-  if (doc_spec.range_options() || doc_spec.range_bounds()) {
+  if (doc_spec.range_options()) {
+    scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
+  }
+
+  if (doc_spec.range_bounds()) {
     scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   }
   return false;
