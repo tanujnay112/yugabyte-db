@@ -402,7 +402,7 @@ class HybridScanChoices : public ScanChoices {
   // take care of this.
   Result<bool> InitScanTargetRangeGroupIfNeeded();
 
-  // Result<bool> FixRanges();
+  void FixRanges();
 
  private:
   std::vector<PrimitiveValue> lower_, upper_;
@@ -585,8 +585,57 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
   return Status::OK();
 }
 
-Result<bool> FixRanges() {
-   return true;
+void HybridScanChoices::FixRanges() {
+  for (size_t col_idx = 0; 
+      col_idx < range_cols_scan_options_lower_.size(); 
+      col_idx++) {
+    auto &lower_opts = range_cols_scan_options_lower_[col_idx];
+    auto &upper_opts = range_cols_scan_options_upper_[col_idx];
+    if(lower_opts.size() == 0) {
+      continue;
+    }
+    std::vector<std::pair<PrimitiveValue, PrimitiveValue>> ranges;
+    for (size_t i = 0;i < range_cols_scan_options_lower_.size();i++) {
+      ranges.emplace_back(std::make_pair(lower_opts[i],
+      upper_opts[i]));
+    }
+
+    std::sort(ranges.begin(), ranges.end(), 
+              [] (auto a, auto b) { return a.first < b.first; });
+    
+    // all ranges in asc order sorted by their lower bounds
+    // now merge ranges
+
+    std::pair<PrimitiveValue, PrimitiveValue> current_range = ranges[0];
+    std::vector<std::pair<PrimitiveValue, PrimitiveValue>> merged_ranges;
+    for (auto &it : ranges) {
+      if (it.first <= current_range.second
+          && it.second > current_range.second) {
+        current_range.second = it.second;
+        continue;
+      }
+
+      if (it.first > current_range.second) {
+        merged_ranges.push_back(current_range);
+        current_range = it;
+        continue;
+      }
+    }
+
+    merged_ranges.push_back(current_range);
+
+
+    // copy these over to original vectors
+    lower_opts.clear();
+    upper_opts.clear();
+
+    for (size_t i = 0;i < merged_ranges.size();i++) {
+      auto &range_to_push = is_forward_scan_ ? merged_ranges[i] 
+                              : merged_ranges[merged_ranges.size() - i - 1];
+      lower_opts.emplace_back(range_to_push.first);
+      upper_opts.emplace_back(range_to_push.second);
+    }
+  }
 }
 
 Status HybridScanChoices::DoneWithCurrentTarget() {
