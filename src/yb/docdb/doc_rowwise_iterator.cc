@@ -370,16 +370,33 @@ class HybridScanChoices : public ScanChoices {
 
     current_scan_target_idxs_.resize(range_cols_scan_options_lower_.size());
 
-    if (is_forward_scan_){
+    if (is_forward_scan_) {
       current_scan_target_ = lower_doc_key;
     } else {
       current_scan_target_ = upper_doc_key;
     }
-    // current_scan_target_.AppendValueType(ValueType::kGroupEnd);
 
     // FixRanges();
+  }
 
-    // CHECK_OK(SkipTargetsUpTo(current_scan_target_));
+  HybridScanChoices(const Schema& schema,
+                    const DocPgsqlScanSpec& doc_spec,
+                    const KeyBytes &lower_doc_key,
+                    const KeyBytes &upper_doc_key)
+      : HybridScanChoices(schema, lower_doc_key, upper_doc_key,
+      doc_spec.is_forward_scan(), doc_spec.range_options_indexes(),
+      doc_spec.range_options(), doc_spec.range_bounds_indexes(),
+      doc_spec.range_bounds()) {
+  }
+
+  HybridScanChoices(const Schema& schema,
+                    const DocQLScanSpec& doc_spec,
+                    const KeyBytes &lower_doc_key,
+                    const KeyBytes &upper_doc_key)
+      : HybridScanChoices(schema, lower_doc_key, upper_doc_key,
+      doc_spec.is_forward_scan(), doc_spec.range_options_indexes(),
+      doc_spec.range_options(), doc_spec.range_bounds_indexes(),
+      doc_spec.range_bounds()) {
   }
 
   CHECKED_STATUS SkipTargetsUpTo(const Slice& new_target) override;
@@ -586,8 +603,8 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
 }
 
 void HybridScanChoices::FixRanges() {
-  for (size_t col_idx = 0; 
-      col_idx < range_cols_scan_options_lower_.size(); 
+  for (size_t col_idx = 0;
+      col_idx < range_cols_scan_options_lower_.size();
       col_idx++) {
     auto &lower_opts = range_cols_scan_options_lower_[col_idx];
     auto &upper_opts = range_cols_scan_options_upper_[col_idx];
@@ -595,14 +612,14 @@ void HybridScanChoices::FixRanges() {
       continue;
     }
     std::vector<std::pair<PrimitiveValue, PrimitiveValue>> ranges;
-    for (size_t i = 0;i < range_cols_scan_options_lower_.size();i++) {
+    for (size_t i = 0; i < range_cols_scan_options_lower_.size(); i++) {
       ranges.emplace_back(std::make_pair(lower_opts[i],
       upper_opts[i]));
     }
 
-    std::sort(ranges.begin(), ranges.end(), 
+    std::sort(ranges.begin(), ranges.end(),
               [] (auto a, auto b) { return a.first < b.first; });
-    
+
     // all ranges in asc order sorted by their lower bounds
     // now merge ranges
 
@@ -629,8 +646,8 @@ void HybridScanChoices::FixRanges() {
     lower_opts.clear();
     upper_opts.clear();
 
-    for (size_t i = 0;i < merged_ranges.size();i++) {
-      auto &range_to_push = is_forward_scan_ ? merged_ranges[i] 
+    for (size_t i = 0; i < merged_ranges.size(); i++) {
+      auto &range_to_push = is_forward_scan_ ? merged_ranges[i]
                               : merged_ranges[merged_ranges.size() - i - 1];
       lower_opts.emplace_back(range_to_push.first);
       upper_opts.emplace_back(range_to_push.second);
@@ -644,13 +661,6 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
   VLOG(2) << __PRETTY_FUNCTION__ << " moving on to next target";
   DCHECK(!FinishedWithScanChoices());
   current_scan_target_.Clear();
-
-  // // Initialize the first target/option if not done already, otherwise go to the next one.
-  // if (!VERIFY_RESULT(InitScanTargetRangeGroupIfNeeded())) {
-  //   // RETURN_NOT_OK(IncrementScanTargetAtColumn(range_cols_scan_options_lower_.size() - 1));
-  //   // current_scan_target_.AppendValueType(ValueType::kGroupEnd);
-  //   current_scan_target_.AppendValueTypeBeforeGroupEnd(ValueType::kHighest);
-  // }
   return Status::OK();
 }
 
@@ -680,10 +690,13 @@ Status HybridScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
 
   if (!FinishedWithScanChoices()) {
     if (!current_scan_target_.empty()) {
-      VLOG(3) << __PRETTY_FUNCTION__ << " current_scan_target_ is non-empty. "
+      VLOG(3) << __PRETTY_FUNCTION__
+              << " current_scan_target_ is non-empty. "
               << DocKey::DebugSliceToString(current_scan_target_);
       if (is_forward_scan_) {
-        VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << DocKey::DebugSliceToString(current_scan_target_);
+        VLOG(3) << __PRETTY_FUNCTION__
+                << " Seeking to "
+                << DocKey::DebugSliceToString(current_scan_target_);
         db_iter->Seek(current_scan_target_);
       } else {
         auto tmp = current_scan_target_;
@@ -907,15 +920,22 @@ Status DocRowwiseIterator::Init(TableType table_type) {
 
 Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocQLScanSpec& doc_spec, const KeyBytes& lower_doc_key, const KeyBytes& upper_doc_key) {
+  // if (doc_spec.range_options()) {
+  //   scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
+  //   // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
+  //   RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
+  //   return true;
+  // }
+
+  // if (doc_spec.range_bounds()) {
+  //   scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
+  // }
   if (doc_spec.range_options()) {
-    scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
-    // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
-    RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
-    return true;
+    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   }
 
   if (doc_spec.range_bounds()) {
-    scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
+    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   }
 
   return false;
@@ -926,7 +946,7 @@ Result<bool> DocRowwiseIterator::InitScanChoices(
     const KeyBytes& upper_doc_key) {
 
   if (doc_spec.range_options()) {
-    scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
+    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   }
 
   if (doc_spec.range_bounds()) {
