@@ -506,7 +506,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     if (ind == lower_choices.size()) {
       // target value is higher than all range options and we need to increment
       if (col_idx == 0) {
-        finished_ = true;
+        // finished_ = true;
       }
       if (is_forward_scan_) {
         PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
@@ -581,7 +581,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
 
   if (col_idx < 0) {
     // If we got here we finished all the options and are done.
-    finished_ = true;
+    // finished_ = true;
     return Status::OK();
   }
 
