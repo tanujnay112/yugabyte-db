@@ -410,7 +410,8 @@ class HybridScanChoices : public ScanChoices {
   // index to 0 and incrementing the previous column instead. If it overflows
   // at first column it means we are done, so it clears the scan target idxs
   // array.
-  CHECKED_STATUS IncrementScanTargetAtColumn(size_t start_col);
+  CHECKED_STATUS IncrementScanTargetAtColumn(size_t start_col, const Slice &
+                                              new_target);
 
   // Utility function for (multi)key scans to initialize the range portion of
   // the current scan
@@ -508,11 +509,19 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       if (col_idx == 0) {
         // finished_ = true;
       }
-      if (is_forward_scan_) {
-        PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
-      } else {
-        PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
-      }
+
+      // if (current_scan_target_.empty()) {
+      //   if (is_forward_scan_) {
+      //     PrimitiveValue(ValueType::kHighest)
+      //           .AppendToKey(&current_scan_target_);
+
+      //     // if we are at the end of our range
+      //   } else {
+      //     PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
+      //   }
+      // } else {
+      RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx, new_target));
+      // }
       col_idx++;
       break;
     }
@@ -560,7 +569,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   return Status::OK();
 }
 
-Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
+Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col, const Slice& new_target) {
   // DCHECK_LE(start_col, current_scan_target_idxs_.size());
 
   // Increment start col, move backwards in case of overflow.
@@ -568,31 +577,63 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(size_t start_col) {
   auto &extremal_vector = is_forward_scan_
                           ? range_cols_scan_options_lower_
                             : range_cols_scan_options_upper_;
+  DocKeyDecoder t_decoder(new_target);
+  RETURN_NOT_OK(t_decoder.DecodeToRangeGroup());
+  std::vector<bool> is_extremal;
+  PrimitiveValue target_value;
+  for (int i = 0; i < col_idx; ++i) {
+    RETURN_NOT_OK(t_decoder.DecodePrimitiveValue(&target_value));
+    is_extremal.push_back(target_value == 
+      extremal_vector[i][current_scan_target_idxs_[i]]);
+  }
+
+  bool start_with_infinity = false;
+
   for (; col_idx >= 0; col_idx--) {
     const auto& choices = extremal_vector[col_idx];
     auto it = current_scan_target_idxs_[col_idx];
 
     if (++it != choices.size()) {
-      current_scan_target_idxs_[col_idx]++;
+      // and if this value is at the extremal bound
+      if (is_extremal[col_idx]){
+        current_scan_target_idxs_[col_idx]++;
+      } else {
+        col_idx += 1;
+        start_with_infinity = true;
+      }
+
+      // if the value is not at the extremal bound then the thing at col_idx + 1
+      // needs to be +/- infinity!
       break;
     }
     current_scan_target_idxs_[col_idx] = 0;
   }
 
+  DocKeyDecoder decoder(current_scan_target_);
+  RETURN_NOT_OK(decoder.DecodeToRangeGroup());
+  for (int i = 0; i < col_idx && i < start_col; ++i) {
+    RETURN_NOT_OK(decoder.DecodePrimitiveValue());
+  }
+
   if (col_idx < 0) {
     // If we got here we finished all the options and are done.
     // finished_ = true;
-    return Status::OK();
-  }
-
-  DocKeyDecoder decoder(current_scan_target_);
-  RETURN_NOT_OK(decoder.DecodeToRangeGroup());
-  for (int i = 0; i <= col_idx; ++i) {
-    RETURN_NOT_OK(decoder.DecodePrimitiveValue());
+    // return Status::OK(); 
+    start_with_infinity = true;
+    col_idx = 0;
   }
 
   current_scan_target_.Truncate(
       decoder.left_input().cdata() - current_scan_target_.AsSlice().cdata());
+  
+  if (start_with_infinity && col_idx < extremal_vector.size()) {
+    if (is_forward_scan_) {
+      PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
+    } else {
+      PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
+    }
+    col_idx++;
+  }
 
   for (size_t i = col_idx; i <= start_col; ++i) {
       extremal_vector[i][current_scan_target_idxs_[i]]
