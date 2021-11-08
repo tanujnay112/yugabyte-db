@@ -231,6 +231,7 @@ namespace docdb {
 std::shared_ptr<rocksdb::BoundaryValuesExtractor> DocBoundaryValuesExtractorInstance();
 
 void SeekForward(const rocksdb::Slice& slice, rocksdb::Iterator *iter) {
+  VLOG(4) << __func__ << "(" << SubDocKey::DebugSliceToString(slice) << ")";
   if (!iter->Valid() || iter->key().compare(slice) >= 0) {
     return;
   }

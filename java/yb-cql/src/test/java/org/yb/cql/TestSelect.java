@@ -1298,7 +1298,7 @@ public class TestSelect extends BaseCQLTest {
       RocksDBMetrics metrics = assertPartialRangeSpec("in_range_test", query, rows);
       // 4 options, but reverse scans do 2 seeks for each option since PrevDocKey calls Seek twice
       // internally.
-      // assertEquals(8, metrics.seekCount);
+      assertEquals(8, metrics.seekCount);
     }
 
     // Test single IN option (equivalent to just using equality constraint).
@@ -1534,7 +1534,7 @@ public class TestSelect extends BaseCQLTest {
       // Additionally, one
       //   Seeking to DocKey([], []) per tablet.
       // Overall, 11 * 10 + 9
-      assertEquals(109, metrics.seekCount);
+      assertEquals(119, metrics.seekCount);
     }
 
     // Test ORDER BY clause (reverse scan).
