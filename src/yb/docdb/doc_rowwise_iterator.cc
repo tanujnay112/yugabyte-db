@@ -442,6 +442,11 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   VLOG(2) << __PRETTY_FUNCTION__ << " Updating current target to be >= "
           << DocKey::DebugSliceToString(new_target);
   DCHECK(!FinishedWithScanChoices());
+  is_options_done_ = false;
+//   if (!is_options_initialized_) {
+// 	  RETURN_NOT_OK(InitScanTargetRangeGroupIfNeeded());
+// 	  is_options_initialized_ = true;
+//   }
 
   /*
    Let's say we have a row key with (A B) as the hash part and C, D as the range part:
@@ -573,7 +578,6 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   current_scan_target_.AppendValueType(ValueType::kGroupEnd);
   VLOG(2) << "After " << __PRETTY_FUNCTION__ << " current_scan_target_ is "
           << DocKey::DebugSliceToString(current_scan_target_);
-  is_live_ = true;
   return Status::OK();
 }
 
@@ -645,6 +649,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
 	col_idx++;
 	VLOG(2) << "col_idx is < 0\n";
     start_with_infinity = true;
+	is_options_done_ = true;
   }
 
   current_scan_target_.Truncate(
@@ -659,7 +664,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
       PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
     }
 	col_idx++;
-	VLOG(2) << "here\n";
+	VLOG(2) << "here " << col_idx << "\n";
   }
   
   if (start_with_infinity) {
@@ -735,18 +740,32 @@ void HybridScanChoices::FixRanges() {
 }
 
 Status HybridScanChoices::DoneWithCurrentTarget() {
+  prev_scan_target_ = current_scan_target_;
   RETURN_NOT_OK(IncrementScanTargetAtColumn(
                                   current_scan_target_idxs_.size() - 1,
                                  current_scan_target_));
   current_scan_target_.AppendValueType(ValueType::kGroupEnd);
+
+  // if we we incremented the last index then
+  // if this is a forward scan it doesn't matter what we do
+  // if this is a backwards scan then dont clear current_scan_target and we 
+  // stay live
   VLOG(2) << "After " << __PRETTY_FUNCTION__ << " current_scan_target_ is "
           << DocKey::DebugSliceToString(current_scan_target_);
-  prev_scan_target_ = current_scan_target_;
 
   VLOG(2) << __PRETTY_FUNCTION__ << " moving on to next target";
   DCHECK(!FinishedWithScanChoices());
-//   current_scan_target_.Clear();
-  is_live_ = false;
+
+//   if (is_options_done_) {
+// 	  const KeyBytes &bound_key = is_forward_scan_ ? upper_doc_key_ : lower_doc_key_;
+// 	  finished_ = bound_key.empty() ? false : is_forward_scan_ == current_scan_target_.CompareTo(bound_key) >= 0;
+//   }
+
+  VLOG(4) << "current_scan_target_ is " << DocKey::DebugSliceToString(current_scan_target_) << " and prev_scan_target_ is " << DocKey::DebugSliceToString(prev_scan_target_);
+  if (prev_scan_target_ == current_scan_target_ || is_options_done_) {
+	current_scan_target_.Clear();
+  }
+
   return Status::OK();
 }
 
@@ -774,9 +793,8 @@ Result<bool> HybridScanChoices::InitScanTargetRangeGroupIfNeeded() {
 Status HybridScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
   VLOG(2) << __PRETTY_FUNCTION__ << " Advancing iterator towards target";
 
-  is_live_ = !current_scan_target_.empty();
   if (!FinishedWithScanChoices()) {
-    if (is_live_) {
+    if (!current_scan_target_.empty()) {
       VLOG(3) << __PRETTY_FUNCTION__
               << " current_scan_target_ is non-empty. "
               << DocKey::DebugSliceToString(current_scan_target_);
@@ -1080,7 +1098,7 @@ Status DocRowwiseIterator::DoInit(const T& doc_spec) {
     }
   }
 
-  if (!VERIFY_RESULT(InitScanChoices(doc_spec, lower_doc_key, upper_doc_key))) {
+  if (!VERIFY_RESULT(InitScanChoices(doc_spec, !is_forward_scan_ && has_bound_key_ ? bound_key_ : lower_doc_key, is_forward_scan_ && has_bound_key_ ? bound_key_ : upper_doc_key))) {
     if (is_forward_scan_) {
       VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << DocKey::DebugSliceToString(lower_doc_key);
       db_iter_->Seek(lower_doc_key);

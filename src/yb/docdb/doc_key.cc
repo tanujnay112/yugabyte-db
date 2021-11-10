@@ -447,7 +447,7 @@ class DocKey::DecodeFromCallback {
 Status DocKey::DecodeFrom(Slice *slice, DocKeyPart part_to_decode, AllowSpecial allow_special) {
   Clear();
   DocKeyDecoder decoder(*slice);
-  RETURN_NOT_OK(DoDecode(&decoder, part_to_decode, allow_special, DecodeFromCallback(this)));
+  RETURN_NOT_OK(DoDecode(&decoder, part_to_decode, AllowSpecial::kTrue, DecodeFromCallback(this)));
   *slice = decoder.left_input();
   return Status::OK();
 }
