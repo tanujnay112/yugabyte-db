@@ -1298,7 +1298,7 @@ public class TestSelect extends BaseCQLTest {
       RocksDBMetrics metrics = assertPartialRangeSpec("in_range_test", query, rows);
       // 4 options, but reverse scans do 2 seeks for each option since PrevDocKey calls Seek twice
       // internally.
-      assertEquals(10, metrics.seekCount);
+      assertEquals(8, metrics.seekCount);
     }
 
     // Test single IN option (equivalent to just using equality constraint).
@@ -1565,7 +1565,7 @@ public class TestSelect extends BaseCQLTest {
       //Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 30, kString : "40"]), []))
       //Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 30, kString : "30"]), []))
       //Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 30, kString : "20"]), []))
-      assertEquals(12, metrics.seekCount);
+      assertEquals(10, metrics.seekCount);
     }
 
     {
@@ -1609,7 +1609,7 @@ public class TestSelect extends BaseCQLTest {
       //  Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 40, kString : "30"]), []))
       //  Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 40, kString : "20"]), []))
       //  Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 40, kString : "10"]), []))
-      assertEquals(30, metrics.seekCount);
+      assertEquals(28, metrics.seekCount);
     }
   }
 

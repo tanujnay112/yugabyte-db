@@ -469,8 +469,8 @@ class HybridScanChoices : public ScanChoices {
 
   bool is_options_done_ = false;
 
-  const KeyBytes &lower_doc_key_;
-  const KeyBytes &upper_doc_key_;
+  const KeyBytes lower_doc_key_;
+  const KeyBytes upper_doc_key_;
 };
 
 Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
@@ -809,7 +809,7 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
 	  const KeyBytes &bound_key = is_forward_scan_ ? upper_doc_key_ : lower_doc_key_;
 	  finished_ = bound_key.empty() ? false : is_forward_scan_ == current_scan_target_.CompareTo(bound_key) >= 0;
 	  VLOG(4) << "finished_ = " << finished_;
-	  VLOG(4) << "bound_key = " << DocKey::DebugSliceToString(bound_key.AsSlice());
+	//   VLOG(4) << "bound_key = " << DocKey::DebugSliceToString(bound_key.AsSlice());
   }
 
   VLOG(4) << "current_scan_target_ is " << DocKey::DebugSliceToString(current_scan_target_) << " and prev_scan_target_ is " << DocKey::DebugSliceToString(prev_scan_target_);
