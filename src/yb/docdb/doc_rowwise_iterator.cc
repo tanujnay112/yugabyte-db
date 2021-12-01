@@ -565,7 +565,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       //   }
       // } else {
       RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1, new_target));
-      col_idx++;
+      col_idx = range_cols_scan_options_lower_.size();
       // }
       // }
       break;
