@@ -68,10 +68,6 @@ DocQLScanSpec::DocQLScanSpec(
       upper_doc_key_(bound_key(false)),
       query_id_(query_id) {
 
-  if (range_bounds_) {
-    range_bounds_indexes_ = range_bounds_->GetColIds();
-  }
-
   // If the hash key is fixed and we have range columns with IN condition, try to construct the
   // exact list of range options to scan for.
   if (!hashed_components_->empty() && schema_.num_range_key_columns() > 0 &&
@@ -80,6 +76,14 @@ DocQLScanSpec::DocQLScanSpec(
     range_options_ =
         std::make_shared<std::vector<std::vector<PrimitiveValue>>>(schema_.num_range_key_columns());
     InitRangeOptions(*condition);
+
+    // Range options are only valid if all range columns are set (i.e. have one or more options).
+    for (int i = 0; i < schema_.num_range_key_columns(); i++) {
+      if ((*range_options_)[i].empty()) {
+        range_options_ = nullptr;
+        break;
+      }
+    }
   }
 }
 
@@ -114,8 +118,12 @@ void DocQLScanSpec::InitRangeOptions(const QLConditionPB& condition) {
         return;
       }
 
+<<<<<<< HEAD
       SortingType sortingType = schema_.column(col_idx).sorting_type();
       range_options_indexes_.emplace_back(condition.operands(0).column_id());
+=======
+      ColumnSchema::SortingType sortingType = schema_.column(col_idx).sorting_type();
+>>>>>>> cleared lint
 
       if (condition.op() == QL_OP_EQUAL) {
         auto pv = PrimitiveValue::FromQLValuePB(condition.operands(1).value(), sortingType);

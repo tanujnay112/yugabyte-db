@@ -236,7 +236,9 @@ Status DiscreteScanChoices::DoneWithCurrentTarget() {
 }
 
 Status DiscreteScanChoices::SkipTargetsUpTo(const Slice& new_target) {
-  VLOG(2) << __PRETTY_FUNCTION__ << " Updating current target to be >= " << DocKey::DebugSliceToString(new_target);;
+  VLOG(2) << __PRETTY_FUNCTION__
+            << " Updating current target to be >= "
+            << DocKey::DebugSliceToString(new_target);
   DCHECK(!FinishedWithScanChoices());
   RETURN_NOT_OK(InitScanTargetRangeGroupIfNeeded());
   DocKeyDecoder decoder(new_target);
@@ -348,9 +350,8 @@ class HybridScanChoices : public ScanChoices {
                     const std::vector<ColumnId> range_bounds_indexes,
                     const common::QLScanRange *range_bounds)
                     : ScanChoices(is_forward_scan),
-					  lower_doc_key_(lower_doc_key),
-					  upper_doc_key_(upper_doc_key)
-					   {
+                        lower_doc_key_(lower_doc_key),
+                        upper_doc_key_(upper_doc_key) {
     lower_.reserve(schema.num_range_key_columns());
     upper_.reserve(schema.num_range_key_columns());
 
@@ -478,10 +479,6 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
           << DocKey::DebugSliceToString(new_target);
   DCHECK(!FinishedWithScanChoices());
   is_options_done_ = false;
-//   if (!is_options_initialized_) {
-// 	  RETURN_NOT_OK(InitScanTargetRangeGroupIfNeeded());
-// 	  is_options_initialized_ = true;
-//   }
 
   /*
    Let's say we have a row key with (A B) as the hash part and C, D as the range part:
@@ -571,7 +568,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       break;
     }
 
-	current_scan_target_idxs_[col_idx] = ind;
+    current_scan_target_idxs_[col_idx] = ind;
 
     // if we are within a range then target value itself should work
     if (lower_choices[ind] <= target_value
@@ -617,7 +614,6 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
 }
 
 Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice& new_target) {
-  // DCHECK_LE(start_col, current_scan_target_idxs_.size());
 
   VLOG(2) << __PRETTY_FUNCTION__
           << " INCREMENTING AT " << start_col
@@ -632,13 +628,6 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
   auto &upper_extremal_vector = is_forward_scan_
                                 ? range_cols_scan_options_upper_
                                   : range_cols_scan_options_lower_;
-
-  for (int i = 0; i < current_scan_target_idxs_.size(); ++i) {
-	  if (current_scan_target_idxs_[i] >= upper_extremal_vector[i].size()) {
-		  VLOG(2) << "NAH THIS BEEN WRONG\n";
-		  break;
-	  }
-  }
   DocKeyDecoder t_decoder(new_target);
   RETURN_NOT_OK(t_decoder.DecodeToRangeGroup());
   std::vector<bool> is_extremal;
@@ -649,9 +638,6 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
       upper_extremal_vector[i][current_scan_target_idxs_[i]]);
   }
 
-//   is_extremal[start_col] = true;
-
-
   // rethink this (70,70) (80, 80)
   bool start_with_infinity = true;
 
@@ -660,7 +646,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
     auto it = current_scan_target_idxs_[col_idx];
 
     if (!is_extremal[col_idx]) {
-	  col_idx++;
+      col_idx++;
       start_with_infinity = true;
       break;
     }
@@ -668,7 +654,6 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
     if (++it < choices.size()) {
       // and if this value is at the extremal bound
       if (is_extremal[col_idx]) {
-        VLOG(2) << "YOOOO????\n";
         current_scan_target_idxs_[col_idx]++;
         start_with_infinity = false;
       }
@@ -686,17 +671,13 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
 
   if (col_idx < 0) {
     // If we got here we finished all the options and are done.
-    // finished_ = true;
-    // return Status::OK();
-	col_idx++;
-	VLOG(2) << "col_idx is < 0\n";
+    col_idx++;
     start_with_infinity = true;
-	is_options_done_ = true;
+    is_options_done_ = true;
   }
 
   current_scan_target_.Truncate(
       decoder.left_input().cdata() - current_scan_target_.AsSlice().cdata());
-  VLOG(2) << "here\n";
 
 
   if (start_with_infinity && col_idx < current_scan_target_idxs_.size()) {
@@ -705,12 +686,11 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
     } else {
       PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
     }
-	col_idx++;
-	VLOG(2) << "here " << col_idx << "\n";
+    col_idx++;
   }
 
   if (start_with_infinity) {
-	  return Status::OK();
+    return Status::OK();
   }
 
   for (int i = col_idx; i <= start_col; ++i) {
@@ -718,19 +698,11 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
                                       .AppendToKey(&current_scan_target_);
   }
 
-  for (int i = start_col + 1; i < current_scan_target_idxs_.size(); ++i) {
-	  current_scan_target_idxs_[i] = 0;
-	  extremal_vector[i][current_scan_target_idxs_[i]]
-                                      .AppendToKey(&current_scan_target_);
-  }
-  VLOG(2) << "here\n";
-
-  for (int i = 0; i < current_scan_target_idxs_.size(); ++i) {
-	  if (current_scan_target_idxs_[i] >= upper_extremal_vector[i].size()) {
-		  VLOG(2) << "NAH THIS WRONG\n";
-		  break;
-	  }
-  }
+    for (int i = start_col + 1; i < current_scan_target_idxs_.size(); ++i) {
+        current_scan_target_idxs_[i] = 0;
+        extremal_vector[i][current_scan_target_idxs_[i]]
+                                        .AppendToKey(&current_scan_target_);
+    }
 
   return Status::OK();
 }
@@ -805,16 +777,20 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
   VLOG(2) << __PRETTY_FUNCTION__ << " moving on to next target";
   DCHECK(!FinishedWithScanChoices());
 
-  if (is_options_done_) {
-	  const KeyBytes &bound_key = is_forward_scan_ ? upper_doc_key_ : lower_doc_key_;
-	  finished_ = bound_key.empty() ? false : is_forward_scan_ == current_scan_target_.CompareTo(bound_key) >= 0;
-	  VLOG(4) << "finished_ = " << finished_;
-	//   VLOG(4) << "bound_key = " << DocKey::DebugSliceToString(bound_key.AsSlice());
-  }
+    if (is_options_done_) {
+        const KeyBytes &bound_key = is_forward_scan_ ? upper_doc_key_ : lower_doc_key_;
+        finished_ = bound_key.empty() ? false
+                        : is_forward_scan_
+                            == current_scan_target_.CompareTo(bound_key) >= 0;
+        VLOG(4) << "finished_ = " << finished_;
+    }
 
-  VLOG(4) << "current_scan_target_ is " << DocKey::DebugSliceToString(current_scan_target_) << " and prev_scan_target_ is " << DocKey::DebugSliceToString(prev_scan_target_);
+  VLOG(4) << "current_scan_target_ is "
+          << DocKey::DebugSliceToString(current_scan_target_)
+          << " and prev_scan_target_ is "
+          << DocKey::DebugSliceToString(prev_scan_target_);
   if (prev_scan_target_ == current_scan_target_ || is_options_done_) {
-	current_scan_target_.Clear();
+      current_scan_target_.Clear();
   }
 
   return Status::OK();
@@ -1076,23 +1052,15 @@ Status DocRowwiseIterator::Init(TableType table_type) {
 
 Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocQLScanSpec& doc_spec, const KeyBytes& lower_doc_key, const KeyBytes& upper_doc_key) {
-//   if (doc_spec.range_options()) {
-//     scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
-//     // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
-//     RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
-//     return true;
-//   }
-
-//   if (doc_spec.range_bounds()) {
-//     scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
-//   }
-
   if (doc_spec.range_options()) {
-    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
+    scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
+    // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
+    RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
+    return true;
   }
 
   if (doc_spec.range_bounds()) {
-    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
+    scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
   }
 
   return false;
@@ -1149,7 +1117,9 @@ Status DocRowwiseIterator::DoInit(const T& doc_spec) {
     }
   }
 
-  if (!VERIFY_RESULT(InitScanChoices(doc_spec, !is_forward_scan_ && has_bound_key_ ? bound_key_ : lower_doc_key, is_forward_scan_ && has_bound_key_ ? bound_key_ : upper_doc_key))) {
+  if (!VERIFY_RESULT(InitScanChoices(doc_spec,
+        !is_forward_scan_ && has_bound_key_ ? bound_key_ : lower_doc_key,
+        is_forward_scan_ && has_bound_key_ ? bound_key_ : upper_doc_key))) {
     if (is_forward_scan_) {
       VLOG(3) << __PRETTY_FUNCTION__ << " Seeking to " << DocKey::DebugSliceToString(lower_doc_key);
       db_iter_->Seek(lower_doc_key);

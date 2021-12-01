@@ -1118,102 +1118,110 @@ public class TestPgSelect extends BasePgSQLTest {
     }
   }
 
-  private RocksDBMetrics assertFullDocDBFilter(Statement statement, String query, String table_name) throws Exception {
-	RocksDBMetrics beforeMetrics = getRocksDBMetric(table_name);
-	String explainOutput = getExplainAnalyzeOutput(statement, query);
-		assertFalse("Expect DocDB to filter fully",
-                  explainOutput.contains("Rows Removed by"));
-	RocksDBMetrics afterMetrics = getRocksDBMetric(table_name);
-	return afterMetrics.subtract(beforeMetrics);
+  private RocksDBMetrics assertFullDocDBFilter(Statement statement,
+    String query, String table_name) throws Exception {
+    RocksDBMetrics beforeMetrics = getRocksDBMetric(table_name);
+    String explainOutput = getExplainAnalyzeOutput(statement, query);
+        assertFalse("Expect DocDB to filter fully",
+                    explainOutput.contains("Rows Removed by"));
+    RocksDBMetrics afterMetrics = getRocksDBMetric(table_name);
+    return afterMetrics.subtract(beforeMetrics);
   }
 
   @Test
   public void testPartialKeyScan() throws Exception {
-	String query = "CREATE TABLE sample_table(h INT, r1 INT, r2 INT, r3 INT, v INT, PRIMARY KEY(h HASH, r1 ASC, r2 ASC, r3 DESC))";
+    String query = "CREATE TABLE sample_table(h INT, r1 INT, r2 INT, r3 INT, "
+                    + "v INT, PRIMARY KEY(h HASH, r1 ASC, r2 ASC, r3 DESC))";
 
-	try (Statement statement = connection.createStatement()) {
-		statement.execute(query);
+    try (Statement statement = connection.createStatement()) {
+        statement.execute(query);
 
-		query = "INSERT INTO sample_table SELECT i/1000, (i/100)%10, (i/10)%10, i%10, i FROM generate_series(1, 100000) i";
-		statement.execute(query);
+        query = "INSERT INTO sample_table SELECT i/1000, (i/100)%10, " +
+                "(i/10)%10, i%10, i FROM generate_series(1, 100000) i";
+        statement.execute(query);
 
-		Set<Row> allRows = new HashSet<>();
-		for (int i = 1; i <= 100000; i++) {
-			allRows.add(new Row(i/1000, (i/100)%10, (i/10)%10, i%10, i));
-		}
+        Set<Row> allRows = new HashSet<>();
+        for (int i = 1; i <= 100000; i++) {
+            allRows.add(new Row(i/1000, (i/100)%10, (i/10)%10, i%10, i));
+        }
 
-		query = "SELECT * FROM sample_table WHERE h = 1 AND r3 < 6";
+        query = "SELECT * FROM sample_table WHERE h = 1 AND r3 < 6";
 
-		Set<Row> expectedRows = allRows.stream()
-                              .filter(r -> r.getInt(0) == 1
-							  			&& r.getInt(3) < 6)
-                              .collect(Collectors.toSet());
-		assertRowSet(statement, query, expectedRows);
+        Set<Row> expectedRows = allRows.stream()
+                                .filter(r -> r.getInt(0) == 1
+                                        && r.getInt(3) < 6)
+                                .collect(Collectors.toSet());
+        assertRowSet(statement, query, expectedRows);
 
-		RocksDBMetrics metrics = assertFullDocDBFilter(statement, query, "sample_table");
-		// 10 * 10 + 1
-		assertEquals(101, metrics.seekCount);
+        RocksDBMetrics metrics = assertFullDocDBFilter(statement, query, "sample_table");
+        // 10 * 10 + 1
+        assertEquals(101, metrics.seekCount);
 
-		query = "SELECT * FROM sample_table WHERE h = 1 AND r1 < 2 AND r3 IN (2, 25, 8, 7, 23, 18)";
-		Integer[] r3FilterArray = {2, 25, 8, 7, 23, 18};
-		Set<Integer> r3Filter = new HashSet<Integer>();
-		r3Filter.addAll(Arrays.asList(r3FilterArray));
+        query = "SELECT * FROM sample_table WHERE " +
+                "h = 1 AND r1 < 2 AND r3 IN (2, 25, 8, 7, 23, 18)";
+        Integer[] r3FilterArray = {2, 25, 8, 7, 23, 18};
+        Set<Integer> r3Filter = new HashSet<Integer>();
+        r3Filter.addAll(Arrays.asList(r3FilterArray));
 
-		expectedRows = allRows.stream()
-                              .filter(r -> r.getInt(0) == 1
-							  			&& r.getInt(1) < 2
-							  			&& r3Filter.contains(r.getInt(3)))
-                              .collect(Collectors.toSet());
-		assertRowSet(statement, query, expectedRows);
+        expectedRows = allRows.stream()
+                                .filter(r -> r.getInt(0) == 1
+                                        && r.getInt(1) < 2
+                                        && r3Filter.contains(r.getInt(3)))
+                                .collect(Collectors.toSet());
+        assertRowSet(statement, query, expectedRows);
 
-		metrics = assertFullDocDBFilter(statement, query, "sample_table");
-		// 4 * 3 * 10 + 1
-		assertEquals(121, metrics.seekCount);
+        metrics = assertFullDocDBFilter(statement, query, "sample_table");
+        // 4 * 3 * 10 + 1
+        assertEquals(121, metrics.seekCount);
 
-		query = "SELECT * FROM sample_table WHERE h = 1 AND r1 = 1 AND r2 IN (2,3) AND r3 IN (2, 25, 8, 7, 23, 18)";
+        query = "SELECT * FROM sample_table WHERE " +
+                "h = 1 AND r1 = 1 AND r2 IN (2,3) " +
+                "AND r3 IN (2, 25, 8, 7, 23, 18)";
 
-		expectedRows = allRows.stream()
-                              .filter(r -> r.getInt(0) == 1
-							  			&& r.getInt(1) == 1
-							  			&& (r.getInt(2) == 2
-										  	|| r.getInt(2) == 3)
-							  			&& r3Filter.contains(r.getInt(3)))
-                              .collect(Collectors.toSet());
-		assertRowSet(statement, query, expectedRows);
+        expectedRows = allRows.stream()
+                                .filter(r -> r.getInt(0) == 1
+                                        && r.getInt(1) == 1
+                                        && (r.getInt(2) == 2
+                                            || r.getInt(2) == 3)
+                                        && r3Filter.contains(r.getInt(3)))
+                                .collect(Collectors.toSet());
+        assertRowSet(statement, query, expectedRows);
 
-		metrics = assertFullDocDBFilter(statement, query, "sample_table");
-		// 4 * 2 + 1
-		assertEquals(9, metrics.seekCount);
+        metrics = assertFullDocDBFilter(statement, query, "sample_table");
+        // 4 * 2 + 1
+        assertEquals(9, metrics.seekCount);
 
-		query = "SELECT * FROM sample_table WHERE h = 1 AND r2 IN (2,3) AND r3 IN (2, 25, 8, 7, 23, 18)";
+        query = "SELECT * FROM sample_table WHERE " +
+                "h = 1 AND r2 IN (2,3) AND r3 IN (2, 25, 8, 7, 23, 18)";
 
-		expectedRows = allRows.stream()
-                              .filter(r -> r.getInt(0) == 1
-							  			&& (r.getInt(2) == 2
-										  	|| r.getInt(2) == 3)
-							  			&& r3Filter.contains(r.getInt(3)))
-                              .collect(Collectors.toSet());
-		assertRowSet(statement, query, expectedRows);
+        expectedRows = allRows.stream()
+                                .filter(r -> r.getInt(0) == 1
+                                        && (r.getInt(2) == 2
+                                            || r.getInt(2) == 3)
+                                        && r3Filter.contains(r.getInt(3)))
+                                .collect(Collectors.toSet());
+        assertRowSet(statement, query, expectedRows);
 
-		metrics = assertFullDocDBFilter(statement, query, "sample_table");
-		// 4 * 2 * 10 + 1
-		assertEquals(91, metrics.seekCount);
+        metrics = assertFullDocDBFilter(statement, query, "sample_table");
+        // 4 * 2 * 10 + 1
+        assertEquals(91, metrics.seekCount);
 
-		query = "SELECT * FROM sample_table WHERE h IN (1,5) AND r2 IN (2,3) AND r3 IN (2, 25, 8, 7, 23, 18)";
+        query = "SELECT * FROM sample_table WHERE " +
+                "h IN (1,5) AND r2 IN (2,3) AND r3 IN (2, 25, 8, 7, 23, 18)";
 
-		expectedRows = allRows.stream()
-                              .filter(r -> (r.getInt(0) == 1
-							  				|| r.getInt(0) == 5)
-							  			&& (r.getInt(2) == 2
-										  	|| r.getInt(2) == 3)
-							  			&& r3Filter.contains(r.getInt(3)))
-                              .collect(Collectors.toSet());
-		assertRowSet(statement, query, expectedRows);
+        expectedRows = allRows.stream()
+                                .filter(r -> (r.getInt(0) == 1
+                                            || r.getInt(0) == 5)
+                                        && (r.getInt(2) == 2
+                                            || r.getInt(2) == 3)
+                                        && r3Filter.contains(r.getInt(3)))
+                                .collect(Collectors.toSet());
+        assertRowSet(statement, query, expectedRows);
 
-		metrics = assertFullDocDBFilter(statement, query, "sample_table");
-		// 4 * 2 * 10 * 2 + 2
-		assertEquals(182, metrics.seekCount);
-  	}
+        metrics = assertFullDocDBFilter(statement, query, "sample_table");
+        // 4 * 2 * 10 * 2 + 2
+        assertEquals(182, metrics.seekCount);
+    }
   }
 
 }

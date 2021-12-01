@@ -642,10 +642,7 @@ Slice IntentAwareIterator::value() {
 }
 
 void IntentAwareIterator::SeekForwardRegular(const Slice& slice) {
-//   VLOG(4) << "SeekForwardRegular(" << SubDocKey::DebugSliceToString(slice) << ")";
-  if (iter_.key().compare(slice) < 0) {
-	  VLOG(4) << "SeekForwardRegular(" << SubDocKey::DebugSliceToString(slice) << ")";
-  }
+  VLOG(4) << "SeekForwardRegular(" << SubDocKey::DebugSliceToString(slice) << ")";
   docdb::SeekForward(slice, &iter_);
   skip_future_records_needed_ = true;
 }
