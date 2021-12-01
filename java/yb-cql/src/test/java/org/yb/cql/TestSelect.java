@@ -1291,7 +1291,6 @@ public class TestSelect extends BaseCQLTest {
 
       String[] rows = {"Row[1, 20, 40, 124]",
               "Row[1, 20, 10, 121]",
-              
               "Row[1, 70, 40, 174]",
               "Row[1, 70, 10, 171]"};
 
@@ -1534,7 +1533,7 @@ public class TestSelect extends BaseCQLTest {
       // Additionally, one
       //   Seeking to DocKey([], []) per tablet.
       // Overall, 11 * 10 + 9
-      assertEquals(109, metrics.seekCount);
+      assertEquals(119, metrics.seekCount);
     }
 
     // Test ORDER BY clause (reverse scan).
@@ -1565,7 +1564,7 @@ public class TestSelect extends BaseCQLTest {
       //Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 30, kString : "40"]), []))
       //Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 30, kString : "30"]), []))
       //Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 30, kString : "20"]), []))
-      assertEquals(10, metrics.seekCount);
+      assertEquals(14, metrics.seekCount);
     }
 
     {
@@ -1609,7 +1608,7 @@ public class TestSelect extends BaseCQLTest {
       //  Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 40, kString : "30"]), []))
       //  Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 40, kString : "20"]), []))
       //  Seek(SubDocKey(DocKey(0x1210, [kInt32 : 1], [kInt32Descending : 40, kString : "10"]), []))
-      assertEquals(28, metrics.seekCount);
+      assertEquals(34, metrics.seekCount);
     }
   }
 

@@ -1145,7 +1145,7 @@ public class TestPgSelect extends BasePgSQLTest {
 		query = "SELECT * FROM sample_table WHERE h = 1 AND r3 < 6";
 
 		Set<Row> expectedRows = allRows.stream()
-                              .filter(r -> r.getInt(0) == 1 
+                              .filter(r -> r.getInt(0) == 1
 							  			&& r.getInt(3) < 6)
                               .collect(Collectors.toSet());
 		assertRowSet(statement, query, expectedRows);
@@ -1202,7 +1202,7 @@ public class TestPgSelect extends BasePgSQLTest {
 		query = "SELECT * FROM sample_table WHERE h IN (1,5) AND r2 IN (2,3) AND r3 IN (2, 25, 8, 7, 23, 18)";
 
 		expectedRows = allRows.stream()
-                              .filter(r -> (r.getInt(0) == 1 
+                              .filter(r -> (r.getInt(0) == 1
 							  				|| r.getInt(0) == 5)
 							  			&& (r.getInt(2) == 2
 										  	|| r.getInt(2) == 3)

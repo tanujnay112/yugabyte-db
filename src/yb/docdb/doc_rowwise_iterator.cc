@@ -552,7 +552,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       // target value is higher than all range options and we need to increment
       // if (col_idx > 0) {
         // finished_ = true;
-      
+
 
       // if (current_scan_target_.empty()) {
       //   if (is_forward_scan_) {
@@ -619,9 +619,9 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
 Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice& new_target) {
   // DCHECK_LE(start_col, current_scan_target_idxs_.size());
 
-  VLOG(2) << __PRETTY_FUNCTION__ 
+  VLOG(2) << __PRETTY_FUNCTION__
           << " INCREMENTING AT " << start_col
-           << "NEW TARGET: " 
+           << "NEW TARGET: "
            << DocKey::DebugSliceToString(new_target);
 
   // Increment start col, move backwards in case of overflow.
@@ -645,7 +645,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
   PrimitiveValue target_value;
   for (int i = 0; i <= col_idx; ++i) {
     RETURN_NOT_OK(t_decoder.DecodePrimitiveValue(&target_value));
-    is_extremal.push_back(target_value == 
+    is_extremal.push_back(target_value ==
       upper_extremal_vector[i][current_scan_target_idxs_[i]]);
   }
 
@@ -687,7 +687,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
   if (col_idx < 0) {
     // If we got here we finished all the options and are done.
     // finished_ = true;
-    // return Status::OK(); 
+    // return Status::OK();
 	col_idx++;
 	VLOG(2) << "col_idx is < 0\n";
     start_with_infinity = true;
@@ -698,7 +698,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
       decoder.left_input().cdata() - current_scan_target_.AsSlice().cdata());
   VLOG(2) << "here\n";
 
-  
+
   if (start_with_infinity && col_idx < current_scan_target_idxs_.size()) {
     if (is_forward_scan_) {
       PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
@@ -708,11 +708,11 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
 	col_idx++;
 	VLOG(2) << "here " << col_idx << "\n";
   }
-  
+
   if (start_with_infinity) {
 	  return Status::OK();
   }
-  
+
   for (int i = col_idx; i <= start_col; ++i) {
       extremal_vector[i][current_scan_target_idxs_[i]]
                                       .AppendToKey(&current_scan_target_);
@@ -797,7 +797,7 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
 
   // if we we incremented the last index then
   // if this is a forward scan it doesn't matter what we do
-  // if this is a backwards scan then dont clear current_scan_target and we 
+  // if this is a backwards scan then dont clear current_scan_target and we
   // stay live
   VLOG(2) << "After " << __PRETTY_FUNCTION__ << " current_scan_target_ is "
           << DocKey::DebugSliceToString(current_scan_target_);
