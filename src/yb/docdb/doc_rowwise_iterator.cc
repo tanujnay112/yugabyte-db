@@ -318,6 +318,12 @@ Status DiscreteScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
   return Status::OK();
 }
 
+// This class combines the notions of option filters (col1 IN (1,2,3)) and
+// singular range filters (col1 < 4 AND col1 >= 1) into a single notion of
+// lists of ranges. So a filter for a column given in the Doc(QL/PGSQL)ScanSpec
+// is converted into a range filter. In the end, each HybridScanChoices
+// instance should have a sorted list of disjoint ranges to filter each column
+
 class HybridScanChoices : public ScanChoices {
  public:
   HybridScanChoices(const Schema& schema, const DocQLScanSpec& doc_spec)
@@ -339,6 +345,9 @@ class HybridScanChoices : public ScanChoices {
     }
   }
 
+  // Constructs a list of ranges for each column from the given scanspec
+  // A filter of the form col1 IN (1,4,5) is converted to a filter
+  // in the form col1 IN ([1, 1], [4, 4], [5, 5])
   HybridScanChoices(const Schema& schema,
                     const KeyBytes &lower_doc_key,
                     const KeyBytes &upper_doc_key,
@@ -368,6 +377,8 @@ class HybridScanChoices : public ScanChoices {
       const ColumnId col_idx = schema.column_id(idx);
       range_cols_scan_options_lower_.push_back({});
       range_cols_scan_options_upper_.push_back({});
+
+      // If this is a range filter, we create a singular list of the given range
       if ((std::find(range_bounds_indexes_.begin(), range_bounds_indexes_.end(), col_idx)
             != range_bounds_indexes_.end())
             && (std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
@@ -382,6 +393,9 @@ class HybridScanChoices : public ScanChoices {
         range_cols_scan_options_lower_[idx - num_hash_cols].push_back(lower);
         range_cols_scan_options_upper_[idx - num_hash_cols].push_back(upper);
       } else {
+
+        // If this is an option filter, we turn each option into a range to
+        // produce a list of singular ranges
         if(std::find(range_options_indexes_.begin(), range_options_indexes_.end(), col_idx)
                 != range_options_indexes_.end()) {
           auto &options = (*range_cols_scan_options)[idx - num_hash_cols];
@@ -394,6 +408,8 @@ class HybridScanChoices : public ScanChoices {
               - num_hash_cols].push_back(upper);
           }
         } else {
+            // If no filter is specified, we just impose an artificial range
+            // filter [kLowest, kHighest]
             range_cols_scan_options_lower_[idx
               - num_hash_cols].push_back(PrimitiveValue(ValueType::kLowest));
             range_cols_scan_options_upper_[idx
@@ -410,7 +426,6 @@ class HybridScanChoices : public ScanChoices {
       current_scan_target_ = upper_doc_key;
     }
 
-    // FixRanges();
   }
 
   HybridScanChoices(const Schema& schema,
@@ -444,17 +459,7 @@ class HybridScanChoices : public ScanChoices {
   // index to 0 and incrementing the previous column instead. If it overflows
   // at first column it means we are done, so it clears the scan target idxs
   // array.
-  CHECKED_STATUS IncrementScanTargetAtColumn(int start_col, const Slice &
-                                              new_target);
-
-  // Utility function for (multi)key scans to initialize the range portion of
-  // the current scan
-  // target, scan target with the first option.
-  // Only needed for scans that include the static row, otherwise Init will
-  // take care of this.
-  Result<bool> InitScanTargetRangeGroupIfNeeded();
-
-  void FixRanges();
+  CHECKED_STATUS IncrementScanTargetAtColumn(int start_col);
 
  private:
   std::vector<PrimitiveValue> lower_, upper_;
@@ -462,6 +467,7 @@ class HybridScanChoices : public ScanChoices {
 
   std::vector<ColumnId> range_bounds_indexes_;
 
+  // The following encodes the list of ranges we are iterating over
   std::vector<std::vector<PrimitiveValue>> range_cols_scan_options_lower_;
   std::vector<std::vector<PrimitiveValue>> range_cols_scan_options_upper_;
 
@@ -474,6 +480,8 @@ class HybridScanChoices : public ScanChoices {
   const KeyBytes upper_doc_key_;
 };
 
+// Sets current_scan_target_ to the first tuple in the filter space
+// that is >= new_target
 Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   VLOG(2) << __PRETTY_FUNCTION__ << " Updating current target to be >= "
           << DocKey::DebugSliceToString(new_target);
@@ -484,18 +492,37 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
    Let's say we have a row key with (A B) as the hash part and C, D as the range part:
    ((A B) C D) E F
 
-   Let's say we have a range constraint :
-    l_c < C < u_c
-     4        6
+   Let's say our current constraints :
+    l_c_k <= C <= u_c_k
+     4            6
+
+    l_d_j <= D <= u_d_j
+      3           5
 
     a b  0 d  -> a  b l_c  d
 
     a b  5 d  -> a  b  5   d
                   [ Will subsequently seek out of document on reading the subdoc]
 
-    a b  7 d  -> a <b> MAX
+    a b  7 d  -> a b l_c_(k+1) 0
+                [ If there is another range filter that's higher than the
+                  current one, effectively, moving this column to the next
+                  range in the filter list]
+              -> a b Inf
                 [ This will seek to <b_next> and on the next invocation update:
-                   a <b_next> ? ? -> a <b_next> l_c d ]
+                   a <b_next> ? ? -> a <b_next> l_c_0 0 ]
+
+    a b  c 6  -> a b c l_d_(j+1)
+                [ If there is another range filter that's higher than the
+                  d, effectively, moving column D to the next
+                  range in the filter list]
+              -> a b c Inf
+                [ If c_next is between l_c_k and u_c_k. This will seek to <a b
+                   <c_next>> and on the next invocation update:
+                   a b <c_next> ? -> a b <c_next> l_d_0 ]
+              -> a b l_c_(k+1) l_d_0
+                 [ If c_next is above u_c_k. We do this because we know
+                   exactly what the next tuple in our filter space should be]
   */
   DocKeyDecoder decoder(new_target);
   RETURN_NOT_OK(decoder.DecodeToRangeGroup());
@@ -511,29 +538,22 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     const auto& lower = lower_choices[current_ind];
     const auto& upper = upper_choices[current_ind];
 
-    // VLOG(3) << "col_idx " << col_idx << " is " << target_value << " in ["
-    //         << yb::ToString(lower) << " , " << yb::ToString(upper) << " ] ?";
-
-    // If it's in range then good, continue after appending the target value column
+    // If it's in range then good, continue after appending the target value
+    // column
 
     if (target_value >= lower && target_value <= upper) {
       target_value.AppendToKey(&current_scan_target_);
       continue;
     }
 
-    // No, if it's not in the current range then we must find a range that
-    // works for it
-    // if we are above all ranges then increment previous index
-    // if we are below all ranges, that's fine, find the lowest range and put
-    // that in
-    // else, if it doesn't fit in a range, find the lowest lower bound and
-    // throw that out
+    // If target_value is not in the current range then we must find a range
+    // that works for it
+    // if we are above all ranges then increment the index of the previous
+    // column
+    // else, target_value is below at least one range: find the lowest lower
+    // bound above target_value and use that, this relies on the assumption
+    // that all our filter ranges are disjoint
 
-    // just gonna assume we sort by asc lower bound for forward scans for now
-    // am also assuming all ranges are disjoint
-    // also assuming we sort ranges in descending order for backward scans
-
-    // find a range that fits us
     auto it = lower_choices.begin();
     size_t ind = 0;
     if (is_forward_scan_) {
@@ -547,24 +567,8 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
 
     if (ind == lower_choices.size()) {
       // target value is higher than all range options and we need to increment
-      // if (col_idx > 0) {
-        // finished_ = true;
-
-
-      // if (current_scan_target_.empty()) {
-      //   if (is_forward_scan_) {
-      //     PrimitiveValue(ValueType::kHighest)
-      //           .AppendToKey(&current_scan_target_);
-
-      //     // if we are at the end of our range
-      //   } else {
-      //     PrimitiveValue(ValueType::kLowest).AppendToKey(&current_scan_target_);
-      //   }
-      // } else {
-      RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1, new_target));
-      col_idx = range_cols_scan_options_lower_.size();
-      // }
-      // }
+      RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1));
+      col_idx = current_scan_target_idxs_.size();
       break;
     }
 
@@ -613,12 +617,39 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   return Status::OK();
 }
 
-Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice& new_target) {
+// Update the value at start column by setting it up for incrementing to the
+// next allowed value in the filter space
+// ---------------------------------------------------------------------------
+// There are two important cases to consider here.
+// Let's say the value of current_scan_target_ at start_col, c,
+// is currently V and the current bounds for that column
+// is l_c_k <= V <= u_c_k. In the usual case where V != u_c_k
+// (or V != l_c_k for backwards scans) such that V_next is still in the given
+// restriction, we set column c + 1 to kHighest (kLowest), such that the next
+// invocation of GetNext() produces V_next at column similar to what is done
+// in SkipTargetsUpTo. In this case, doing a SkipTargetsUpTo on the resulting
+// current_scan_target_ should yield the next allowed value in the filter space
+// In the case where V = u_c_k (V = l_c_k), or in other words V is at the
+// extremal boundary of the current range, we know exactly what the next value
+// of column C will be. So we move column c to the next
+// range k+1 and set that column to the new value l_c_(k+1) (u_c_(k+1))
+// while setting all columns, b > c to l_b_0 (u_b_0)
+// In the case of overflow on a column c (we want to increment the
+// restriction range of c to the next range for that column but there are no
+// restriction ranges remaining), we set the current column to the 0th range
+// and move on to increment c - 1
+// Note that in almost all cases the resulting current_scan_target_ is strictly
+// greater (lesser in the case of backwards scans) than the original
+// current_scan_target_. This is necessary to allow the iterator seek out
+// of the current scan target. The exception to this rule is below.
+// ---------------------------------------------------------------------------
+// This function leaves the scan target as is if the next tuple in the current
+// scan direction is also the next tuple in the filter space and start_col
+// is given as the last column
+Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col) {
 
   VLOG(2) << __PRETTY_FUNCTION__
-          << " INCREMENTING AT " << start_col
-           << "NEW TARGET: "
-           << DocKey::DebugSliceToString(new_target);
+          << " Incrementing at " << start_col;
 
   // Increment start col, move backwards in case of overflow.
   int col_idx = start_col;
@@ -628,7 +659,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
   auto &upper_extremal_vector = is_forward_scan_
                                 ? range_cols_scan_options_upper_
                                   : range_cols_scan_options_lower_;
-  DocKeyDecoder t_decoder(new_target);
+  DocKeyDecoder t_decoder(current_scan_target_);
   RETURN_NOT_OK(t_decoder.DecodeToRangeGroup());
   std::vector<bool> is_extremal;
   PrimitiveValue target_value;
@@ -638,7 +669,6 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
       upper_extremal_vector[i][current_scan_target_idxs_[i]]);
   }
 
-  // rethink this (70,70) (80, 80)
   bool start_with_infinity = true;
 
   for (; col_idx >= 0; col_idx--) {
@@ -680,7 +710,8 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
       decoder.left_input().cdata() - current_scan_target_.AsSlice().cdata());
 
 
-  if (start_with_infinity && col_idx < current_scan_target_idxs_.size()) {
+  if (start_with_infinity &&
+        (col_idx < current_scan_target_idxs_.size())) {
     if (is_forward_scan_) {
       PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
     } else {
@@ -698,73 +729,21 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col, const Slice
                                       .AppendToKey(&current_scan_target_);
   }
 
-    for (int i = start_col + 1; i < current_scan_target_idxs_.size(); ++i) {
-        current_scan_target_idxs_[i] = 0;
-        extremal_vector[i][current_scan_target_idxs_[i]]
-                                        .AppendToKey(&current_scan_target_);
-    }
+  for (int i = start_col + 1; i < current_scan_target_idxs_.size(); ++i) {
+    current_scan_target_idxs_[i] = 0;
+    extremal_vector[i][current_scan_target_idxs_[i]]
+                                    .AppendToKey(&current_scan_target_);
+  }
 
   return Status::OK();
 }
 
-void HybridScanChoices::FixRanges() {
-  for (size_t col_idx = 0;
-      col_idx < range_cols_scan_options_lower_.size();
-      col_idx++) {
-    auto &lower_opts = range_cols_scan_options_lower_[col_idx];
-    auto &upper_opts = range_cols_scan_options_upper_[col_idx];
-    if(lower_opts.size() == 0) {
-      continue;
-    }
-    std::vector<std::pair<PrimitiveValue, PrimitiveValue>> ranges;
-    for (size_t i = 0; i < range_cols_scan_options_lower_.size(); i++) {
-      ranges.emplace_back(std::make_pair(lower_opts[i],
-      upper_opts[i]));
-    }
-
-    std::sort(ranges.begin(), ranges.end(),
-              [] (auto a, auto b) { return a.first < b.first; });
-
-    // all ranges in asc order sorted by their lower bounds
-    // now merge ranges
-
-    std::pair<PrimitiveValue, PrimitiveValue> current_range = ranges[0];
-    std::vector<std::pair<PrimitiveValue, PrimitiveValue>> merged_ranges;
-    for (auto &it : ranges) {
-      if (it.first <= current_range.second
-          && it.second > current_range.second) {
-        current_range.second = it.second;
-        continue;
-      }
-
-      if (it.first > current_range.second) {
-        merged_ranges.push_back(current_range);
-        current_range = it;
-        continue;
-      }
-    }
-
-    merged_ranges.push_back(current_range);
-
-
-    // copy these over to original vectors
-    lower_opts.clear();
-    upper_opts.clear();
-
-    for (size_t i = 0; i < merged_ranges.size(); i++) {
-      auto &range_to_push = is_forward_scan_ ? merged_ranges[i]
-                              : merged_ranges[merged_ranges.size() - i - 1];
-      lower_opts.emplace_back(range_to_push.first);
-      upper_opts.emplace_back(range_to_push.second);
-    }
-  }
-}
-
+// Method called when the scan target is done being used
 Status HybridScanChoices::DoneWithCurrentTarget() {
+  // prev_scan_target_ is necessary for backwards scans
   prev_scan_target_ = current_scan_target_;
   RETURN_NOT_OK(IncrementScanTargetAtColumn(
-                                  current_scan_target_idxs_.size() - 1,
-                                 current_scan_target_));
+                                  current_scan_target_idxs_.size() - 1));
   current_scan_target_.AppendValueType(ValueType::kGroupEnd);
 
   // if we we incremented the last index then
@@ -777,18 +756,35 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
   VLOG(2) << __PRETTY_FUNCTION__ << " moving on to next target";
   DCHECK(!FinishedWithScanChoices());
 
-    if (is_options_done_) {
-        const KeyBytes &bound_key = is_forward_scan_ ? upper_doc_key_ : lower_doc_key_;
-        finished_ = bound_key.empty() ? false
-                        : is_forward_scan_
-                            == current_scan_target_.CompareTo(bound_key) >= 0;
-        VLOG(4) << "finished_ = " << finished_;
-    }
+  if (is_options_done_) {
+      // It could be possible that we finished all our options but are not
+      // done because we haven't hit the bound key yet. This would usually be
+      // the case if we are moving onto the next hash key where we will restart
+      // our options.
+      const KeyBytes &bound_key = is_forward_scan_ ? upper_doc_key_ : lower_doc_key_;
+      finished_ = bound_key.empty() ? false
+                    : is_forward_scan_
+                        == current_scan_target_.CompareTo(bound_key) >= 0;
+      VLOG(4) << "finished_ = " << finished_;
+  }
+
 
   VLOG(4) << "current_scan_target_ is "
           << DocKey::DebugSliceToString(current_scan_target_)
           << " and prev_scan_target_ is "
           << DocKey::DebugSliceToString(prev_scan_target_);
+
+  // The below condition is either indicative of the special case
+  // where IncrementScanTargetAtColumn didn't change the target due
+  // to the backwards scan case specified in the last section of the
+  // documentation for IncrementScanTargetAtColumn or we have exhausted
+  // all available range keys for the given hash key (indicated
+  // by is_options_done_)
+  // We clear the scan target in these cases to indicate that the
+  // current_scan_target_ has been used and is invalid
+  // In all other cases, IncrementScanTargetAtColumn has updated
+  // current_scan_target_ to the new value that we want to seek to.
+  // Hence, we shouldn't clear it in those cases
   if (prev_scan_target_ == current_scan_target_ || is_options_done_) {
       current_scan_target_.Clear();
   }
@@ -796,31 +792,15 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
   return Status::OK();
 }
 
-Result<bool> HybridScanChoices::InitScanTargetRangeGroupIfNeeded() {
-  DocKeyDecoder decoder(current_scan_target_.AsSlice());
-  RETURN_NOT_OK(decoder.DecodeToRangeGroup());
-
-  // Initialize the range key values if needed (i.e. we scanned the static row until now).
-  if (!VERIFY_RESULT(decoder.HasPrimitiveValue())) {
-    current_scan_target_.mutable_data()->pop_back();
-    for (size_t col_idx = 0; col_idx < range_cols_scan_options_lower_.size(); col_idx++) {
-      size_t index = current_scan_target_idxs_[col_idx];
-      if (is_forward_scan_) {
-        range_cols_scan_options_lower_[col_idx][index].AppendToKey(&current_scan_target_);
-      } else {
-        range_cols_scan_options_upper_[col_idx][index].AppendToKey(&current_scan_target_);
-      }
-    }
-    current_scan_target_.AppendValueType(ValueType::kGroupEnd);
-    return true;
-  }
-  return false;
-}
-
+// Seeks the given iterator to the current target as specified by
+// current_scan_target_ and prev_scan_target_ (relevant in backwards
+// scans)
 Status HybridScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
   VLOG(2) << __PRETTY_FUNCTION__ << " Advancing iterator towards target";
 
   if (!FinishedWithScanChoices()) {
+    // if current_scan_target_ is valid we use it to determine
+    // what to seek to
     if (!current_scan_target_.empty()) {
       VLOG(3) << __PRETTY_FUNCTION__
               << " current_scan_target_ is non-empty. "
@@ -831,9 +811,12 @@ Status HybridScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
                 << DocKey::DebugSliceToString(current_scan_target_);
         db_iter->Seek(current_scan_target_);
       } else {
+        // seek to the highest key <= current_scan_target_
+        // seeking to the highest key < current_scan_target_ + kHighest
+        // is equivalent to seeking to the highest key <= current_scan_target_
         auto tmp = current_scan_target_;
         PrimitiveValue(ValueType::kHighest).AppendToKey(&tmp);
-        VLOG(3) << __PRETTY_FUNCTION__ << " Going to PrevDocKey " << tmp;  // Never seen.
+        VLOG(3) << __PRETTY_FUNCTION__ << " Going to PrevDocKey " << tmp;
         db_iter->PrevDocKey(tmp);
       }
     } else {
@@ -1052,16 +1035,24 @@ Status DocRowwiseIterator::Init(TableType table_type) {
 
 Result<bool> DocRowwiseIterator::InitScanChoices(
     const DocQLScanSpec& doc_spec, const KeyBytes& lower_doc_key, const KeyBytes& upper_doc_key) {
-  if (doc_spec.range_options()) {
-    scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
-    // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
-    RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
-    return true;
+
+        if (doc_spec.range_options()) {
+    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   }
 
   if (doc_spec.range_bounds()) {
-    scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
+    scan_choices_.reset(new HybridScanChoices(schema_, doc_spec, lower_doc_key, upper_doc_key));
   }
+//   if (doc_spec.range_options()) {
+//     scan_choices_.reset(new DiscreteScanChoices(doc_spec, lower_doc_key, upper_doc_key));
+//     // Let's not seek to the lower doc key or upper doc key. We know exactly what we want.
+//     RETURN_NOT_OK(AdvanceIteratorToNextDesiredRow());
+//     return true;
+//   }
+
+//   if (doc_spec.range_bounds()) {
+//     scan_choices_.reset(new RangeBasedScanChoices(schema_, doc_spec));
+//   }
 
   return false;
 }
@@ -1167,7 +1158,8 @@ Result<bool> DocRowwiseIterator::HasNext() const {
   // Repeated HasNext calls (without Skip/NextRow in between) should be idempotent:
   // 1. If a previous call failed we returned the same status.
   // 2. If a row is already available (row_ready_), return true directly.
-  // 3. If we finished all target rows for the scan (done_), return false directly.
+  // 3. If we finished all target rows for the scan (done_),
+  //   return false directly.
   RETURN_NOT_OK(has_next_status_);
   if (row_ready_) {
     // If row is ready, then HasNext returns true.
@@ -1195,10 +1187,12 @@ Result<bool> DocRowwiseIterator::HasNext() const {
       LOG(INFO) << __func__ << ", fetched key: " << SubDocKey::DebugSliceToString(key_data->key)
                 << ", " << key_data->key.ToDebugHexString();
 
-    // The iterator is positioned by the previous GetSubDocument call (which places the iterator
-    // outside the previous doc_key). Ensure the iterator is pushed forward/backward indeed. We
-    // check it here instead of after GetSubDocument() below because we want to avoid the extra
-    // expensive FetchKey() call just to fetch and validate the key.
+    // The iterator is positioned by the previous GetSubDocument call
+    // (which places the iterator outside the previous doc_key).
+    // Ensure the iterator is pushed forward/backward indeed. We
+    // check it here instead of after GetSubDocument() below because
+    // we want to avoid the extra expensive FetchKey() call just to
+    // fetch and validate the key.
     if (!iter_key_.data().empty() &&
         (is_forward_scan_ ? iter_key_.CompareTo(key_data->key) >= 0
                           : iter_key_.CompareTo(key_data->key) <= 0)) {
