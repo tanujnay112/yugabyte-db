@@ -68,9 +68,9 @@ DocQLScanSpec::DocQLScanSpec(
       upper_doc_key_(bound_key(false)),
       query_id_(query_id) {
 
-          if (range_bounds_) {
-    range_bounds_indexes_ = range_bounds_->GetColIds();
-  }
+    if (range_bounds_) {
+        range_bounds_indexes_ = range_bounds_->GetColIds();
+    }
 
 
   // If the hash key is fixed and we have range columns with IN condition, try to construct the
@@ -81,14 +81,6 @@ DocQLScanSpec::DocQLScanSpec(
     range_options_ =
         std::make_shared<std::vector<std::vector<PrimitiveValue>>>(schema_.num_range_key_columns());
     InitRangeOptions(*condition);
-
-    // Range options are only valid if all range columns are set (i.e. have one or more options).
-    // for (int i = 0; i < schema_.num_range_key_columns(); i++) {
-    //   if ((*range_options_)[i].empty()) {
-    //     range_options_ = nullptr;
-    //     break;
-    //   }
-    // }
   }
 }
 

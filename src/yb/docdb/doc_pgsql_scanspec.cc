@@ -181,7 +181,7 @@ DocPgsqlScanSpec::DocPgsqlScanSpec(
         // Range options are only valid if all
         // range columns are set (i.e. have one or more options)
         // when hybrid scan is disabled
-        for (int i = 0; i < schema_.num_range_key_columns(); i++) {
+        for (size_t i = 0; i < schema_.num_range_key_columns(); i++) {
             if ((*range_options_)[i].empty()) {
                 range_options_ = nullptr;
                 break;

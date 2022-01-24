@@ -350,13 +350,8 @@ class HybridScanChoices : public ScanChoices {
                     : ScanChoices(is_forward_scan),
                         lower_doc_key_(lower_doc_key),
                         upper_doc_key_(upper_doc_key) {
-    lower_.reserve(schema.num_range_key_columns());
-    upper_.reserve(schema.num_range_key_columns());
-
-    auto range_cols_scan_options = doc_spec.range_options();
+    auto range_cols_scan_options = range_options;
     size_t idx = 0;
-    range_bounds_indexes_ = doc_spec.range_bounds_indexes();
-    range_options_indexes_ = doc_spec.range_options_indexes();
     range_cols_scan_options_lower_.reserve(schema.num_range_key_columns());
     range_cols_scan_options_upper_.reserve(schema.num_range_key_columns());
 
@@ -377,11 +372,11 @@ class HybridScanChoices : public ScanChoices {
                             range_options_indexes.end(), col_idx)
                         == range_options_indexes.end())) {
         const auto col_sort_type = schema.column(idx).sorting_type();
-        const QLScanRange::QLRange range = doc_spec.range_bounds()->RangeFor(col_idx);
-        const auto lower = GetQLRangeBoundAsPVal(range, col_sort_type, true /* lower_bound */);
-        const auto upper = GetQLRangeBoundAsPVal(range, col_sort_type, false /* upper_bound */);
-        lower_.emplace_back(lower);
-        upper_.emplace_back(upper);
+        const QLScanRange::QLRange range = range_bounds->RangeFor(col_idx);
+        const auto lower = GetQLRangeBoundAsPVal(range, col_sort_type,
+                                                    true /* lower_bound */);
+        const auto upper = GetQLRangeBoundAsPVal(range, col_sort_type,
+                                                    false /* upper_bound */);
 
         range_cols_scan_options_lower_[idx - num_hash_cols].push_back(lower);
         range_cols_scan_options_upper_[idx - num_hash_cols].push_back(upper);
@@ -533,7 +528,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   current_scan_target_.Reset(Slice(new_target.data(),
                                 decoder.left_input().data()));
 
-  int col_idx = 0;
+  size_t col_idx = 0;
   PrimitiveValue target_value;
   for (col_idx = 0; col_idx < current_scan_target_idxs_.size(); col_idx++) {
     RETURN_NOT_OK(decoder.DecodePrimitiveValue(&target_value));
@@ -577,7 +572,7 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     if (ind == lower_choices.size()) {
       // target value is higher than all range options and
       // we need to increment.
-      RETURN_NOT_OK(IncrementScanTargetAtColumn(col_idx - 1));
+      RETURN_NOT_OK(IncrementScanTargetAtColumn(static_cast<int>(col_idx) - 1));
       col_idx = current_scan_target_idxs_.size();
       break;
     }
@@ -588,7 +583,6 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     if (lower_choices[ind] <= target_value
         && upper_choices[ind] >= target_value) {
       target_value.AppendToKey(&current_scan_target_);
-      current_scan_target_idxs_[col_idx] = ind;
       continue;
     }
 
@@ -605,7 +599,6 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     } else {
       upper_choices[ind].AppendToKey(&current_scan_target_);
     }
-    current_scan_target_idxs_[col_idx] = ind;
     col_idx++;
     break;
   }
@@ -729,7 +722,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col) {
 
 
   if (start_with_infinity &&
-        (col_idx < current_scan_target_idxs_.size())) {
+        (col_idx < static_cast<int64>(current_scan_target_idxs_.size()))) {
     if (is_forward_scan_) {
       PrimitiveValue(ValueType::kHighest).AppendToKey(&current_scan_target_);
     } else {
@@ -748,7 +741,7 @@ Status HybridScanChoices::IncrementScanTargetAtColumn(int start_col) {
                                       .AppendToKey(&current_scan_target_);
   }
 
-  for (int i = start_col + 1; i < current_scan_target_idxs_.size(); ++i) {
+  for (size_t i = start_col + 1; i < current_scan_target_idxs_.size(); ++i) {
     current_scan_target_idxs_[i] = 0;
     lower_extremal_vector[i][current_scan_target_idxs_[i]]
                                     .AppendToKey(&current_scan_target_);
@@ -762,7 +755,7 @@ Status HybridScanChoices::DoneWithCurrentTarget() {
   // prev_scan_target_ is necessary for backwards scans
   prev_scan_target_ = current_scan_target_;
   RETURN_NOT_OK(IncrementScanTargetAtColumn(
-                                  current_scan_target_idxs_.size() - 1));
+                                  static_cast<int>(current_scan_target_idxs_.size()) - 1));
   current_scan_target_.AppendValueType(ValueType::kGroupEnd);
 
   // if we we incremented the last index then
@@ -1064,7 +1057,7 @@ Result<bool> DocRowwiseIterator::InitScanChoices(
   if (!FLAGS_disable_hybrid_scan) {
     if (doc_spec.range_options() || doc_spec.range_bounds()) {
         scan_choices_.reset(new HybridScanChoices(schema_, doc_spec,
-                                        lower_doc_key, upper_doc_key));
+                                    lower_doc_key, upper_doc_key));
     }
 
     return false;
