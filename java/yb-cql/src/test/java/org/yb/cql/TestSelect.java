@@ -1284,6 +1284,37 @@ public class TestSelect extends BaseCQLTest {
       assertEquals(4, metrics.seekCount);
     }
 
+    // Test using
+    {
+        String query =
+            "SELECT * FROM in_range_test WHERE h = 1 AND r1 IN (80, 30)";
+
+        String[] rows = {"Row[1, 80, 0, 180]",
+                        "Row[1, 80, 10, 181]",
+                        "Row[1, 80, 20, 182]",
+                        "Row[1, 80, 30, 183]",
+                        "Row[1, 80, 40, 184]",
+                        "Row[1, 80, 50, 185]",
+                        "Row[1, 80, 60, 186]",
+                        "Row[1, 80, 70, 187]",
+                        "Row[1, 80, 80, 188]",
+                        "Row[1, 80, 90, 189]",
+                        "Row[1, 30, 0, 130]",
+                        "Row[1, 30, 10, 131]",
+                        "Row[1, 30, 20, 132]",
+                        "Row[1, 30, 30, 133]",
+                        "Row[1, 30, 40, 134]",
+                        "Row[1, 30, 50, 135]",
+                        "Row[1, 30, 60, 136]",
+                        "Row[1, 30, 70, 137]",
+                        "Row[1, 30, 80, 138]",
+                        "Row[1, 30, 90, 139]"};
+        RocksDBMetrics metrics = assertPartialRangeSpec("in_range_test", query,
+        rows);
+        // seeking to 2
+        assertEquals(2, metrics.seekCount);
+    }
+
     // Test ORDER BY clause with IN (reverse scan).
     {
       String query = "SELECT * FROM in_range_test WHERE h = 1 AND " +
