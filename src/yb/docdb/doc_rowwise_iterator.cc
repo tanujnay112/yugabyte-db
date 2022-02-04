@@ -50,6 +50,7 @@
 
 #include "yb/rocksdb/db.h"
 
+#include "yb/util/flag_tags.h"
 #include "yb/util/result.h"
 #include "yb/util/status.h"
 #include "yb/util/status_format.h"
@@ -58,6 +59,7 @@
 
 DEFINE_bool(disable_hybrid_scan, false,
             "If true, hybrid scan will be disabled");
+TAG_FLAG(disable_hybrid_scan, runtime);
 
 using std::string;
 
@@ -330,6 +332,9 @@ Status DiscreteScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
 // Doc(QL/PGSQL)ScanSpec is converted into a range bound filter.
 // In the end, each HybridScanChoices
 // instance should have a sorted list of disjoint ranges to filter each column.
+// Right now this supports a conjunction of range bound and discrete filters.
+// Disjunctions are also supported but are UNTESTED.
+// TODO: Test disjunctions when YSQL and YQL support pushing those down
 
 class HybridScanChoices : public ScanChoices {
  public:

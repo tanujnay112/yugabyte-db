@@ -1284,7 +1284,7 @@ public class TestSelect extends BaseCQLTest {
       assertEquals(4, metrics.seekCount);
     }
 
-    // Test using
+    // Test using a partial specification of range key
     {
         String query =
             "SELECT * FROM in_range_test WHERE h = 1 AND r1 IN (80, 30)";
@@ -1311,7 +1311,9 @@ public class TestSelect extends BaseCQLTest {
                         "Row[1, 30, 90, 139]"};
         RocksDBMetrics metrics = assertPartialRangeSpec("in_range_test", query,
         rows);
-        // seeking to 2
+        // seeking to 2 places
+        // Seeking to DocKey(0x0a73, [1], [80, kLowest])
+        // Seeking to DocKey(0x0a73, [1], [30, kLowest])
         assertEquals(2, metrics.seekCount);
     }
 
