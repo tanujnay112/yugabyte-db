@@ -453,6 +453,57 @@ Status PgDmlRead::BindColumnCondIn(int attr_num, int n_attr_values, PgExpr **att
   return Status::OK();
 }
 
+Result<docdb::DocKey> PgDmlRead::EncodeRowKey(YBCPgStatement handle,
+    int n_col_values, PgExpr **col_values) {
+    google::protobuf::RepeatedPtrField<PgsqlExpressionPB> hashed_values;
+  vector<docdb::PrimitiveValue> hashed_components, range_components;
+  hashed_components.reserve(bind_->num_hash_key_columns());
+  range_components.reserve(bind_->num_key_columns() - bind_->num_hash_key_columns());
+  size_t i = 0;
+  for (; i < bind_->num_hash_key_columns(); ++i) {
+    auto& col = bind_.columns()[i];
+
+    auto new_val = hashed_values.Add();
+    RETURN_NOT_OK(col_values[i]->Eval(new_val));
+    auto docdbval = docdb::PrimitiveValue::FromQLValuePB(new_val->value(),
+                                col.desc().sorting_type());
+    hashed_components.push_back(std::move(docdbval));
+  }
+
+  auto dockey_builder = VERIFY_RESULT(CreateDocKeyBuilder(
+      hashed_components, hashed_values, bind_->partition_schema()));
+
+  for (; i < bind_->num_key_columns(); ++i) {
+     auto& col = bind_.columns()[i];
+
+    PgsqlExpressionPB temp_val;
+    RETURN_NOT_OK(col_values[i]->Eval(&temp_val));
+    auto docdbval = docdb::PrimitiveValue::FromQLValuePB(temp_val.value(),
+                            col.desc().sorting_type());
+    range_components.push_back(std::move(docdbval));
+  }
+  const auto dockey = dockey_builder(range_components);
+  return dockey;
+}
+
+Status PgDmlRead::BindRowUpperBound(YBCPgStatement handle, int n_col_values, PgExpr **col_values) {
+
+  const auto dockey = VERIFY_RESULT(EncodeRowKey(handle, n_col_values, col_values));
+  read_req_->mutable_upper_bound()->set_key(dockey.Encode().ToStringBuffer());
+  read_req_->mutable_upper_bound()->set_is_inclusive(true);
+
+  return Status::OK();
+}
+
+Status PgDmlRead::BindRowLowerBound(YBCPgStatement handle, int n_col_values, PgExpr **col_values) {
+
+  const auto dockey = VERIFY_RESULT(EncodeRowKey(handle, n_col_values, col_values));
+  read_req_->mutable_lower_bound()->set_key(dockey.Encode().ToStringBuffer());
+  read_req_->mutable_lower_bound()->set_is_inclusive(true);
+
+  return Status::OK();
+}
+
 Status PgDmlRead::SubstitutePrimaryBindsWithYbctids(const PgExecParameters* exec_params) {
   const auto ybctids = VERIFY_RESULT(BuildYbctidsFromPrimaryBinds());
   std::vector<Slice> ybctids_as_slice;

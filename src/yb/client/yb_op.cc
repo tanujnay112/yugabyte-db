@@ -718,6 +718,106 @@ bool YBPgsqlOp::applied() {
 
 namespace {
 
+Status GetRangeComponents(
+    const Schema& schema, const google::protobuf::RepeatedPtrField<PgsqlExpressionPB>& range_cols,
+    std::vector<docdb::PrimitiveValue>* range_components, bool lower_bound) {
+  int i = 0;
+  auto num_range_key_columns = narrow_cast<int>(schema.num_range_key_columns());
+  for (const auto& col_id : schema.column_ids()) {
+    if (!schema.is_range_column(col_id)) {
+      continue;
+    }
+
+    const ColumnSchema& column_schema = VERIFY_RESULT(schema.column_by_id(col_id));
+    if (i >= range_cols.size() || range_cols[i].value().value_case() == QLValuePB::VALUE_NOT_SET) {
+      if (lower_bound) {
+        range_components->emplace_back(docdb::ValueType::kLowest);
+      } else {
+          range_components->emplace_back(docdb::ValueType::kHighest);
+      }
+    } else {
+      range_components->push_back(docdb::PrimitiveValue::FromQLValuePB(
+          range_cols[i].value(), column_schema.sorting_type()));
+    }
+
+    i++;
+    if (i == num_range_key_columns) {
+      break;
+    }
+  }
+
+  if (!lower_bound) {
+    range_components->emplace_back(docdb::ValueType::kHighest);
+  }
+  return Status::OK();
+}
+
+CHECKED_STATUS GetRangePartitionKey(
+    const Schema& schema, const google::protobuf::RepeatedPtrField<PgsqlExpressionPB>& range_cols,
+    std::string* key) {
+  vector<docdb::PrimitiveValue> range_components;
+  RSTATUS_DCHECK(!schema.num_hash_key_columns(), IllegalState,
+      "Cannot get range partition key for hash partitioned table");
+
+  RETURN_NOT_OK(GetRangeComponents(schema, range_cols, &range_components, true));
+  *key = docdb::DocKey(std::move(range_components)).Encode().ToStringBuffer();
+  return Status::OK();
+}
+
+CHECKED_STATUS GetRangePartitionBounds(const YBPgsqlReadOp& op,
+                                       vector<docdb::PrimitiveValue>* lower_bound,
+                                       vector<docdb::PrimitiveValue>* upper_bound) {
+  const auto& schema = op.table()->InternalSchema();
+  SCHECK(!schema.num_hash_key_columns(), IllegalState,
+         "Cannot set range partition key for hash partitioned table");
+  const auto& request = op.request();
+  const auto& range_cols = request.range_column_values();
+  const auto& condition_expr = request.condition_expr();
+  if (condition_expr.has_condition() &&
+      implicit_cast<size_t>(range_cols.size()) < schema.num_range_key_columns()) {
+    auto prefixed_range_components = VERIFY_RESULT(docdb::InitKeyColumnPrimitiveValues(
+        range_cols, schema, schema.num_hash_key_columns()));
+    QLScanRange scan_range(schema, condition_expr.condition());
+    *lower_bound = docdb::GetRangeKeyScanSpec(
+        schema, &prefixed_range_components, &scan_range, true /* lower_bound */);
+    *upper_bound = docdb::GetRangeKeyScanSpec(
+        schema, &prefixed_range_components, &scan_range, false /* upper_bound */);
+  } else if (!range_cols.empty()) {
+    RETURN_NOT_OK(GetRangeComponents(schema, range_cols, lower_bound, true));
+    RETURN_NOT_OK(GetRangeComponents(schema, range_cols, lower_bound, false));
+  }
+  return Status::OK();
+}
+
+CHECKED_STATUS SetRangePartitionBounds(const YBPgsqlReadOp& op,
+                                       std::string* key,
+                                       std::string* key_upper_bound) {
+  vector<docdb::PrimitiveValue> range_components, range_components_end;
+  RETURN_NOT_OK(GetRangePartitionBounds(op, &range_components, &range_components_end));
+  if (range_components.empty() && range_components_end.empty()) {
+    if (op.request().is_forward_scan()) {
+      key->clear();
+    } else {
+      // In case of backward scan process must be start from the last partition.
+      *key = op.table()->GetPartitionsShared()->back();
+    }
+    key_upper_bound->clear();
+    return Status::OK();
+  }
+  auto upper_bound_key = docdb::DocKey(std::move(range_components_end)).Encode().ToStringBuffer();
+  if (op.request().is_forward_scan()) {
+    *key = docdb::DocKey(std::move(range_components)).Encode().ToStringBuffer();
+    *key_upper_bound = std::move(upper_bound_key);
+  } else {
+    // Backward scan should go from upper bound to lower. But because DocDB can check upper bound
+    // only it is not set here. Lower bound will be checked on client side in the
+    // ReviewResponsePagingState function.
+    *key = std::move(upper_bound_key);
+    key_upper_bound->clear();
+  }
+  return Status::OK();
+}
+
 std::string ResponseSuffix(const PgsqlResponsePB& response) {
   const auto str = response.ShortDebugString();
   return str.empty() ? std::string() : (", response: " + str);

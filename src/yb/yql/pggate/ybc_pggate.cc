@@ -584,6 +584,18 @@ YBCStatus YBCPgDmlBindColumn(YBCPgStatement handle, int attr_num, YBCPgExpr attr
   return ToYBCStatus(pgapi->DmlBindColumn(handle, attr_num, attr_value));
 }
 
+YBCStatus YBCPgDmlBindRowUpperBound(YBCPgStatement handle,
+                                    int n_col_values,
+                                    YBCPgExpr *col_values) {
+    return ToYBCStatus(pgapi->DmlBindRowUpperBound(handle, n_col_values, col_values));
+}
+
+YBCStatus YBCPgDmlBindRowLowerBound(YBCPgStatement handle,
+                                    int n_col_values,
+                                    YBCPgExpr *col_values) {
+    return ToYBCStatus(pgapi->DmlBindRowLowerBound(handle, n_col_values, col_values));
+}
+
 YBCStatus YBCPgDmlBindColumnCondBetween(YBCPgStatement handle, int attr_num, YBCPgExpr attr_value,
     YBCPgExpr attr_value_end) {
   return ToYBCStatus(pgapi->DmlBindColumnCondBetween(handle, attr_num, attr_value, attr_value_end));

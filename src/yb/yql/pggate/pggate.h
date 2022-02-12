@@ -366,6 +366,14 @@ class PgApiImpl {
                                 bool end_valid, bool end_inclusive,
                                 uint64_t end_hash_val);
 
+  CHECKED_STATUS DmlBindRowUpperBound(YBCPgStatement handle,
+                                    int n_col_values,
+                                    YBCPgExpr *col_values);
+
+  CHECKED_STATUS DmlBindRowLowerBound(YBCPgStatement handle,
+                                    int n_col_values,
+                                    YBCPgExpr *col_values);
+
   // Binding Tables: Bind the whole table in a statement.  Do not use with BindColumn.
   CHECKED_STATUS DmlBindTable(YBCPgStatement handle);
 

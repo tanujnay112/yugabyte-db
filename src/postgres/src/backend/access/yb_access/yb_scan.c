@@ -917,6 +917,89 @@ ybcBindScanKeys(YbScanDesc ybScan, YbScanPlan scan_plan) {
 		/* Check if this is primary columns */
 		int bind_key_attnum = scan_plan->bind_key_attnums[i];
 		int idx = YBAttnumToBmsIndex(relation, bind_key_attnum);
+        /* Check if this is full key row comparison expression */
+        if (ybScan->key[i].sk_flags & SK_ROW_HEADER)
+        {
+            int j = 0;
+            ScanKey subkeys = (ScanKey) DatumGetPointer(ybScan->key[i].sk_argument);
+            int last_att_no = YBFirstLowInvalidAttributeNumber;
+            bool can_pushdown = true;
+            bool is_direction_asc = (index->rd_indoption[
+                subkeys[0].sk_attno - 1] & INDOPTION_DESC) == 0;
+            int strategy = subkeys[0].sk_strategy;
+            int count = 0;
+            do {
+                ScanKey current = &subkeys[j];
+                can_pushdown &= (current->sk_attno > last_att_no);
+                can_pushdown &= (strategy == current->sk_strategy);
+                last_att_no = current->sk_attno;
+                count++;
+            }
+            while((subkeys[j++].sk_flags & SK_ROW_END) == 0 && can_pushdown);
+            can_pushdown &= (count == index->rd_index->indnkeyatts);
+
+            if (can_pushdown)
+            {
+                // bind upper or lower
+                // if strategy is equal then bind both 
+
+                YBCPgExpr *col_values = palloc(sizeof(YBCPgExpr) * count);
+                for (j = 0; j < count; j++)
+                {
+                    ScanKey current = &subkeys[j];
+                    bool asc = (index->rd_indoption[current->sk_attno - 1] & INDOPTION_DESC) == 0;
+                    bool gt = (strategy == BTGreaterEqualStrategyNumber
+                                || strategy == BTGreaterStrategyNumber);
+                    if(asc != is_direction_asc && 
+                        strategy != BTEqualStrategyNumber) {
+                        // get -inf in if strategy is <= + asc or
+                        // >= + desc
+                        // 1 1 -> +inf (upper bound)
+                        // 0 1 -> -inf (lower bound)
+                        // 1 0 -> -inf (lower bound)
+                        // 0 0 -> +inf (upper bound)
+                        if (gt ^ asc) {
+                            // -inf
+                            col_values[j] = 
+                                YBCNewConstantVirtual(ybScan->handle, 
+                                    ybc_get_atttypid(scan_plan->bind_desc,
+                                    current->sk_attno), YB_YQL_DATUM_LIMIT_MIN);
+                        } else {
+                            // +inf
+                            col_values[j] = 
+                                YBCNewConstantVirtual(ybScan->handle, 
+                                    ybc_get_atttypid(scan_plan->bind_desc,
+                                    current->sk_attno), YB_YQL_DATUM_LIMIT_MAX);
+                        }
+                    } else {
+                        col_values[j] = YBCNewConstant(ybScan->handle,
+                            ybc_get_atttypid(scan_plan->bind_desc, current->sk_attno), current->sk_collation, current->sk_argument, false);
+                    }
+                }
+
+                switch (strategy)
+                {
+                    case BTEqualStrategyNumber:
+                        HandleYBStatus(YBCPgDmlBindRowLowerBound(ybScan->handle, count, col_values));
+                        HandleYBStatus(YBCPgDmlBindRowUpperBound(ybScan->handle, count, col_values));
+                        break;
+                    case BTGreaterEqualStrategyNumber:
+                        switch_fallthrough();
+                    case BTGreaterStrategyNumber:
+                        HandleYBStatus(YBCPgDmlBindRowLowerBound(ybScan->handle, count, col_values));
+                        break;
+                    case BTLessEqualStrategyNumber:
+                        switch_fallthrough();
+                    case BTLessStrategyNumber:
+                        HandleYBStatus(YBCPgDmlBindRowUpperBound(ybScan->handle, count, col_values));
+                        break;
+                    default:
+                        Assert(false);
+                        break;
+                }
+            }
+            continue;
+        }
 		if (!IsHashCodeSearch(ybScan->key[i].sk_flags)
 			&& !bms_is_member(idx, scan_plan->sk_cols))
 			continue;

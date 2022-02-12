@@ -920,6 +920,16 @@ Status PgApiImpl::DmlBindColumnCondIn(PgStatement *handle, int attr_num, int n_a
   return down_cast<PgDmlRead*>(handle)->BindColumnCondIn(attr_num, n_attr_values, attr_values);
 }
 
+Status PgApiImpl::DmlBindRowUpperBound(YBCPgStatement handle,
+    int n_col_values, PgExpr **col_values) {
+    return down_cast<PgDmlRead*>(handle)->BindRowUpperBound(handle, n_col_values, col_values);
+}
+
+Status PgApiImpl::DmlBindRowLowerBound(YBCPgStatement handle,
+    int n_col_values, PgExpr **col_values) {
+    return down_cast<PgDmlRead*>(handle)->BindRowLowerBound(handle, n_col_values, col_values);
+}
+
 Status PgApiImpl::DmlBindHashCode(PgStatement *handle, bool start_valid,
                                     bool start_inclusive,
                                     uint64_t start_hash_val, bool end_valid,

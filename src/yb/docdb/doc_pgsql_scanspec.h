@@ -5,7 +5,6 @@
 //
 // http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied.  See the License for the specific language governing permissions and limitations
 // under the License.
@@ -29,6 +28,12 @@ namespace docdb {
 // DocDB variant of scanspec.
 class DocPgsqlScanSpec : public PgsqlScanSpec {
  public:
+
+  DocPgsqlScanSpec(const Schema& schema,
+                 const rocksdb::QueryId query_id,
+                 const DocKey& lower_doc_key,
+                 const DocKey& upper_doc_key,
+                 bool is_forward_scan);
 
   // Scan for the specified doc_key.
   DocPgsqlScanSpec(const Schema& schema,
@@ -54,7 +59,9 @@ class DocPgsqlScanSpec : public PgsqlScanSpec {
                    boost::optional<int32_t> max_hash_code,
                    const PgsqlExpressionPB *where_expr,
                    const DocKey& start_doc_key = DefaultStartDocKey(),
-                   bool is_forward_scan = true);
+                   bool is_forward_scan = true,
+                   const DocKey& lower_doc_key = DefaultStartDocKey(),
+                   const DocKey& upper_doc_key = DefaultStartDocKey());
 
   //------------------------------------------------------------------------------------------------
   // Access funtions.

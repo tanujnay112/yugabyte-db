@@ -72,6 +72,10 @@ class PgDmlRead : public PgDml {
                                 uint64_t start_hash_val, bool end_valid,
                                 bool end_inclusive, uint64_t end_hash_val);
 
+  CHECKED_STATUS BindRowLowerBound(YBCPgStatement handle, int n_col_values, PgExpr **col_values);
+
+  CHECKED_STATUS BindRowUpperBound(YBCPgStatement handle, int n_col_values, PgExpr **col_values);
+
   // Execute.
   virtual CHECKED_STATUS Exec(const PgExecParameters *exec_params);
 
@@ -113,6 +117,7 @@ class PgDmlRead : public PgDml {
   bool CanBuildYbctidsFromPrimaryBinds();
   Result<std::vector<std::string>> BuildYbctidsFromPrimaryBinds();
   CHECKED_STATUS SubstitutePrimaryBindsWithYbctids(const PgExecParameters* exec_params);
+  Result<docdb::DocKey> EncodeRowKey(YBCPgStatement handle, int n_col_values, PgExpr **col_values);
   CHECKED_STATUS MoveBoundKeyInOperator(PgColumn* col, const PgsqlConditionPB& in_operator);
   CHECKED_STATUS CopyBoundValue(
       const PgColumn& col, const PgsqlExpressionPB& src, QLValuePB* dest) const;
