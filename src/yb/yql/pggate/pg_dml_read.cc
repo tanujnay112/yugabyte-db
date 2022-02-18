@@ -458,10 +458,11 @@ Result<docdb::DocKey> PgDmlRead::EncodeRowKey(YBCPgStatement handle,
     google::protobuf::RepeatedPtrField<PgsqlExpressionPB> hashed_values;
   vector<docdb::PrimitiveValue> hashed_components, range_components;
   hashed_components.reserve(bind_->num_hash_key_columns());
-  range_components.reserve(bind_->num_key_columns() - bind_->num_hash_key_columns());
+  range_components.reserve(bind_->num_key_columns()
+                            - bind_->num_hash_key_columns());
   size_t i = 0;
   for (; i < bind_->num_hash_key_columns(); ++i) {
-    auto& col = bind_.columns()[i];
+    auto &col = bind_.columns()[i];
 
     auto new_val = hashed_values.Add();
     RETURN_NOT_OK(col_values[i]->Eval(new_val));
@@ -473,7 +474,8 @@ Result<docdb::DocKey> PgDmlRead::EncodeRowKey(YBCPgStatement handle,
   auto dockey_builder = VERIFY_RESULT(CreateDocKeyBuilder(
       hashed_components, hashed_values, bind_->partition_schema()));
 
-  for (; i < bind_->num_key_columns(); ++i) {
+  for (; i < bind_->num_key_columns()
+            && (static_cast<int>(i) < n_col_values); ++i) {
      auto& col = bind_.columns()[i];
 
     PgsqlExpressionPB temp_val;
@@ -486,18 +488,33 @@ Result<docdb::DocKey> PgDmlRead::EncodeRowKey(YBCPgStatement handle,
   return dockey;
 }
 
-Status PgDmlRead::BindRowUpperBound(YBCPgStatement handle, int n_col_values, PgExpr **col_values) {
+Status PgDmlRead::BindRowUpperBound(YBCPgStatement handle,
+                                    int n_col_values, PgExpr **col_values) {
+  if (secondary_index_query_) {
+      return secondary_index_query_->BindRowUpperBound(handle,
+                                                        n_col_values,
+                                                        col_values);
+  }
 
-  const auto dockey = VERIFY_RESULT(EncodeRowKey(handle, n_col_values, col_values));
+  const auto dockey = VERIFY_RESULT(EncodeRowKey(handle, n_col_values,
+                                                    col_values));
   read_req_->mutable_upper_bound()->set_key(dockey.Encode().ToStringBuffer());
   read_req_->mutable_upper_bound()->set_is_inclusive(true);
 
   return Status::OK();
 }
 
-Status PgDmlRead::BindRowLowerBound(YBCPgStatement handle, int n_col_values, PgExpr **col_values) {
+Status PgDmlRead::BindRowLowerBound(YBCPgStatement handle, int n_col_values,
+                                    PgExpr **col_values) {
 
-  const auto dockey = VERIFY_RESULT(EncodeRowKey(handle, n_col_values, col_values));
+  if (secondary_index_query_) {
+      return secondary_index_query_->BindRowLowerBound(handle,
+                                                        n_col_values,
+                                                        col_values);
+  }
+
+  const auto dockey = VERIFY_RESULT(EncodeRowKey(handle, n_col_values,
+                                                    col_values));
   read_req_->mutable_lower_bound()->set_key(dockey.Encode().ToStringBuffer());
   read_req_->mutable_lower_bound()->set_is_inclusive(true);
 

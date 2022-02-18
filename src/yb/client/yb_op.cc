@@ -720,7 +720,8 @@ namespace {
 
 Status GetRangeComponents(
     const Schema& schema, const google::protobuf::RepeatedPtrField<PgsqlExpressionPB>& range_cols,
-    std::vector<docdb::PrimitiveValue>* range_components, bool lower_bound) {
+    std::vector<docdb::PrimitiveValue>* range_components,
+    bool lower_bound) {
   int i = 0;
   auto num_range_key_columns = narrow_cast<int>(schema.num_range_key_columns());
   for (const auto& col_id : schema.column_ids()) {

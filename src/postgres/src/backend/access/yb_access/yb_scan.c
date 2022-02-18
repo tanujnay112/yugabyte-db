@@ -921,81 +921,134 @@ ybcBindScanKeys(YbScanDesc ybScan, YbScanPlan scan_plan) {
         if (ybScan->key[i].sk_flags & SK_ROW_HEADER)
         {
             int j = 0;
-            ScanKey subkeys = (ScanKey) DatumGetPointer(ybScan->key[i].sk_argument);
+            ScanKey subkeys = (ScanKey) 
+                    DatumGetPointer(ybScan->key[i].sk_argument);
             int last_att_no = YBFirstLowInvalidAttributeNumber;
+
+            /* 
+             * We can only push down right now if the full primary key
+             * is specified in the correct order and the primary key 
+             * has no hashed columns. We also need to ensure that 
+             * the same comparison operation is done to all subkeys.
+             */
             bool can_pushdown = true;
-            bool is_direction_asc = (index->rd_indoption[
-                subkeys[0].sk_attno - 1] & INDOPTION_DESC) == 0;
+
             int strategy = subkeys[0].sk_strategy;
             int count = 0;
             do {
                 ScanKey current = &subkeys[j];
+                /* Make sure that the specified keys are in the right order. */
                 can_pushdown &= (current->sk_attno > last_att_no);
+
+                /*
+                 * Make sure that the same comparator is applied to
+                 * all subkeys.
+                 */
                 can_pushdown &= (strategy == current->sk_strategy);
                 last_att_no = current->sk_attno;
+
+                /* Make sure that there are no hash key columns. */
+                if (index->rd_indoption[current->sk_attno - 1] 
+                    & INDOPTION_HASH) {
+                    can_pushdown = false;
+                    break;
+                }
                 count++;
             }
             while((subkeys[j++].sk_flags & SK_ROW_END) == 0 && can_pushdown);
+            
+            /*
+             * Make sure that the full primary key is specified in order
+             * to push down.
+             */
             can_pushdown &= (count == index->rd_index->indnkeyatts);
 
             if (can_pushdown)
             {
-                // bind upper or lower
-                // if strategy is equal then bind both 
 
                 YBCPgExpr *col_values = palloc(sizeof(YBCPgExpr) * count);
+                /*
+                 * Prepare upper/lower bound tuples determined from this clause
+                 * for bind. Care must be taken in the case that primary key
+                 * columns in the index are ordered differently from each other.
+                 * For example, consider if the underlying index has primary key
+                 * (r1 ASC, r2 DESC, r3 ASC) and we are dealing with a clause
+                 * like (r1, r2, r3) <= (40, 35, 12). We cannot simply bind
+                 * (40, 35, 12) as an upper bound as that will miss tuples such
+                 * as (40, 32, 0). Instead we must push down (40, Inf, 12) in
+                 * this case for correctness. (Note that +Inf in this context
+                 * is higher in STORAGE order than all other values not
+                 * necessarily logical order, similar to the role of
+                 * docdb::ValueType::kHighest.
+                 */
+
+                /*
+                 * Is the first column in ascending order in the index? This is
+                 * important because whether or not the RHS of a (row key) >=
+                 * (row key values) expression is considered an upper bound
+                 * is dependent on the answer to this question. The RHS of
+                 * such an expression will be the scan upper bound if the
+                 * first column is in descending order and lower if else.
+                 * Similar logic applies to the RHS of (row key) <=
+                 * (row key values) expressions.
+                 */
+                bool is_direction_asc = 
+                                    (index->rd_indoption[
+                                        subkeys[0].sk_attno - 1] 
+                                        & INDOPTION_DESC) == 0;
+                bool gt = (strategy == BTGreaterEqualStrategyNumber
+                                || strategy == BTGreaterStrategyNumber);
+
+                /* Whether or not the RHS values make up a DocDB upper bound */
+                bool is_upper_bound = gt ^ is_direction_asc;
                 for (j = 0; j < count; j++)
                 {
                     ScanKey current = &subkeys[j];
-                    bool asc = (index->rd_indoption[current->sk_attno - 1] & INDOPTION_DESC) == 0;
-                    bool gt = (strategy == BTGreaterEqualStrategyNumber
-                                || strategy == BTGreaterStrategyNumber);
+                    /*
+                     * Is the current column stored in ascending order in the
+                     * underlying index?
+                     */
+                    bool asc = (index->rd_indoption[current->sk_attno - 1]
+                                & INDOPTION_DESC) == 0;
+
+                    /*
+                     * If this column has different directionality than the
+                     * first column then we have to adjust the bounds on this
+                     * column.
+                     */
                     if(asc != is_direction_asc && 
-                        strategy != BTEqualStrategyNumber) {
-                        // get -inf in if strategy is <= + asc or
-                        // >= + desc
-                        // 1 1 -> +inf (upper bound)
-                        // 0 1 -> -inf (lower bound)
-                        // 1 0 -> -inf (lower bound)
-                        // 0 0 -> +inf (upper bound)
-                        if (gt ^ asc) {
-                            // -inf
-                            col_values[j] = 
-                                YBCNewConstantVirtual(ybScan->handle, 
-                                    ybc_get_atttypid(scan_plan->bind_desc,
-                                    current->sk_attno), YB_YQL_DATUM_LIMIT_MIN);
-                        } else {
-                            // +inf
-                            col_values[j] = 
-                                YBCNewConstantVirtual(ybScan->handle, 
-                                    ybc_get_atttypid(scan_plan->bind_desc,
-                                    current->sk_attno), YB_YQL_DATUM_LIMIT_MAX);
-                        }
-                    } else {
+                        strategy != BTEqualStrategyNumber)
+                    {
+                        /* +inf if is_upper_bound else -inf */
+                        col_values[j] = 
+                            YBCNewConstantVirtual(ybScan->handle, 
+                                ybc_get_atttypid(scan_plan->bind_desc,
+                                current->sk_attno),
+                                is_upper_bound ? YB_YQL_DATUM_LIMIT_MAX
+                                                : YB_YQL_DATUM_LIMIT_MIN);
+                    }
+                    else
+                    {
                         col_values[j] = YBCNewConstant(ybScan->handle,
-                            ybc_get_atttypid(scan_plan->bind_desc, current->sk_attno), current->sk_collation, current->sk_argument, false);
+                                            ybc_get_atttypid
+                                                (scan_plan->bind_desc,
+                                            current->sk_attno),
+                                            current->sk_collation,
+                                            current->sk_argument,
+                                            false);
                     }
                 }
 
-                switch (strategy)
+                if (is_upper_bound || (strategy == BTEqualStrategyNumber))
                 {
-                    case BTEqualStrategyNumber:
-                        HandleYBStatus(YBCPgDmlBindRowLowerBound(ybScan->handle, count, col_values));
-                        HandleYBStatus(YBCPgDmlBindRowUpperBound(ybScan->handle, count, col_values));
-                        break;
-                    case BTGreaterEqualStrategyNumber:
-                        switch_fallthrough();
-                    case BTGreaterStrategyNumber:
-                        HandleYBStatus(YBCPgDmlBindRowLowerBound(ybScan->handle, count, col_values));
-                        break;
-                    case BTLessEqualStrategyNumber:
-                        switch_fallthrough();
-                    case BTLessStrategyNumber:
-                        HandleYBStatus(YBCPgDmlBindRowUpperBound(ybScan->handle, count, col_values));
-                        break;
-                    default:
-                        Assert(false);
-                        break;
+                    HandleYBStatus(YBCPgDmlBindRowUpperBound(ybScan->handle,
+                                    count, col_values));
+                }
+
+                if (!is_upper_bound || (strategy == BTEqualStrategyNumber))
+                {
+                    HandleYBStatus(YBCPgDmlBindRowLowerBound(ybScan->handle,
+                                    count, col_values));
                 }
             }
             continue;

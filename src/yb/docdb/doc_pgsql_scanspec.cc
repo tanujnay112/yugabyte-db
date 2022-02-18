@@ -91,25 +91,6 @@ class PgsqlRangeBasedFileFilter : public rocksdb::ReadFileFilter {
 
 //--------------------------------------------------------------------------------------------------
 
-DocPgsqlScanSpec::DocPgsqlScanSpec(
-    const Schema& schema,
-    const rocksdb::QueryId query_id,
-    const DocKey& lower_doc_key,
-    const DocKey& upper_doc_key,
-    bool is_forward_scan)
-    : PgsqlScanSpec(nullptr),
-        schema_(schema),
-        query_id_(query_id),
-        start_doc_key_(is_forward_scan ? lower_doc_key.Encode() : upper_doc_key.Encode()),
-        lower_doc_key_(lower_doc_key.Encode()),
-        upper_doc_key_(upper_doc_key.Encode()),
-        is_forward_scan_(is_forward_scan) {
-  LOG(INFO) << "#### Row-Bound scan spec!!";
-  // TODO this will current get to doc rowwise iterator without either range bounds or options
-  // We either need to set some fake bounds here (kLowest, kHighest) for each column or
-  // make HybridScan support that no-bounds, no-options case.
-}
-
 DocPgsqlScanSpec::DocPgsqlScanSpec(const Schema& schema,
                                    const rocksdb::QueryId query_id,
                                    const DocKey& doc_key,
@@ -185,11 +166,13 @@ DocPgsqlScanSpec::DocPgsqlScanSpec(
   LOG(INFO) << "changes: LOWER KEY1 IS " << DocKey::DebugSliceToString(lower_doc_key_);
   LOG(INFO) << "changes: UPPER KEY1 IS " << DocKey::DebugSliceToString(upper_doc_key_);
   auto lower_bound_key = bound_key(schema, true);
-  lower_doc_key_ = lower_bound_key > lower_doc_key_ || lower_doc_key.empty()
+  lower_doc_key_ = lower_bound_key > lower_doc_key_
+                    || lower_doc_key.empty()
                     ? lower_bound_key : lower_doc_key_;
 
   auto upper_bound_key = bound_key(schema, false);
-  upper_doc_key_ = upper_bound_key < upper_doc_key_ || upper_doc_key.empty()
+  upper_doc_key_ = upper_bound_key < upper_doc_key_
+                    || upper_doc_key.empty()
                     ? upper_bound_key : upper_doc_key_;
 
   LOG(INFO) << "changes: LOWER KEY2 IS " << DocKey::DebugSliceToString(bound_key(schema, true));

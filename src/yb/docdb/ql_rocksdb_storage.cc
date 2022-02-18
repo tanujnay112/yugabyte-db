@@ -162,24 +162,6 @@ Status QLRocksDBStorage::GetIterator(const PgsqlReadRequestPB& request,
 
   LOG(INFO) << "#### " << request.DebugString();
 
-//   if (request.has_lower_bound() && request.has_upper_bound()) {
-//     // TODO this should not be a custom case.
-
-//     DocKey lower_doc_key;
-//     Slice lower_key_slice = request.lower_bound().key();
-//     RETURN_NOT_OK(lower_doc_key.DecodeFrom(&lower_key_slice));
-
-//     DocKey upper_doc_key;
-//     Slice upper_key_slice = request.upper_bound().key();
-//     RETURN_NOT_OK(upper_doc_key.DecodeFrom(&upper_key_slice));
-
-//     RETURN_NOT_OK(doc_iter->Init(DocPgsqlScanSpec(
-//         schema,
-//         request.stmt_id(),
-//         lower_doc_key,
-//         upper_doc_key,
-//         request.is_forward_scan())));
-//   } else
   if (range_components.size() == schema.num_range_key_columns()) {
     // Construct the scan spec basing on the RANGE condition as all range columns are specified.
     RETURN_NOT_OK(doc_iter->Init(DocPgsqlScanSpec(
@@ -202,7 +184,8 @@ Status QLRocksDBStorage::GetIterator(const PgsqlReadRequestPB& request,
     // Construct the scan spec basing on the HASH condition.
 
     DocKey lower_doc_key(schema);
-    if (request.has_lower_bound()) {
+    if (request.has_lower_bound()
+        && schema.num_hash_key_columns() == 0) {
         Slice lower_key_slice = request.lower_bound().key();
         RETURN_NOT_OK(lower_doc_key.DecodeFrom(&lower_key_slice,
                             DocKeyPart::kWholeDocKey,
@@ -211,7 +194,8 @@ Status QLRocksDBStorage::GetIterator(const PgsqlReadRequestPB& request,
     }
 
     DocKey upper_doc_key(schema);
-    if (request.has_upper_bound()) {
+    if (request.has_upper_bound()
+        && schema.num_hash_key_columns() == 0) {
         Slice upper_key_slice = request.upper_bound().key();
         RETURN_NOT_OK(upper_doc_key.DecodeFrom(&upper_key_slice,
                             DocKeyPart::kWholeDocKey,

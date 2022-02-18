@@ -587,13 +587,17 @@ YBCStatus YBCPgDmlBindColumn(YBCPgStatement handle, int attr_num, YBCPgExpr attr
 YBCStatus YBCPgDmlBindRowUpperBound(YBCPgStatement handle,
                                     int n_col_values,
                                     YBCPgExpr *col_values) {
-    return ToYBCStatus(pgapi->DmlBindRowUpperBound(handle, n_col_values, col_values));
+    return ToYBCStatus(pgapi->DmlBindRowUpperBound(handle,
+                                                    n_col_values,
+                                                    col_values));
 }
 
 YBCStatus YBCPgDmlBindRowLowerBound(YBCPgStatement handle,
                                     int n_col_values,
                                     YBCPgExpr *col_values) {
-    return ToYBCStatus(pgapi->DmlBindRowLowerBound(handle, n_col_values, col_values));
+    return ToYBCStatus(pgapi->DmlBindRowLowerBound(handle,
+                                                    n_col_values,
+                                                    col_values));
 }
 
 YBCStatus YBCPgDmlBindColumnCondBetween(YBCPgStatement handle, int attr_num, YBCPgExpr attr_value,
