@@ -190,6 +190,11 @@ Status QLRocksDBStorage::GetIterator(const PgsqlReadRequestPB& request,
         RETURN_NOT_OK(lower_doc_key.DecodeFrom(&lower_key_slice,
                             DocKeyPart::kWholeDocKey,
                             AllowSpecial::kTrue));
+        if (request.lower_bound().has_is_inclusive()
+            && !request.lower_bound().is_inclusive()) {
+            lower_doc_key.AddRangeComponent(
+                PrimitiveValue(docdb::ValueType::kHighest));
+        }
         LOG(INFO) << "WE HAVE A LOWER BOUND";
     }
 

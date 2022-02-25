@@ -308,12 +308,16 @@ CREATE TABLE pk_range_int_asc (r1 INT, r2 INT, r3 INT, v INT, PRIMARY KEY(r1 asc
 INSERT INTO pk_range_int_asc SELECT i/100, (i/10) % 10, i % 10, i FROM generate_series(1, 1000) AS i;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (6,7,8);
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (6,7,8) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) < (6,7,8);
+SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) < (6,7,8) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (6,6,6);
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (6,6,6) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (8,8,3);
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (8,8,3) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) >= (8,8,3);
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) >= (8,8,3) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) > (8,8,3);
+SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) > (8,8,3) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) >= (1,4,5) AND (r1, r2, r3) <= (7,4,5);
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) >= (1,4,5) AND (r1, r2, r3) <= (7,4,5) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) >= (1,4,5) AND (r1, r2, r3) <= (1,6,5) AND r3 IN (5,2,6);
@@ -322,18 +326,33 @@ EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) >= (1,4,5) AND (r1, r2, r3) <= (1,6,5) ORDER BY r1 DESC, r2 DESC, r3 DESC LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) = (1,6,5);
 SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) = (1,6,5) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (1,6,5) AND (r1,r2,r3) < (1,6,5);
+SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (1,6,5) AND (r1,r2,r3) < (1,6,5) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (1,6,5) AND (r1,r2,r3) < (1,6,5) AND (r1,r2,r3) > (1,2,3) AND (r1,r2,r3) < (1,6,4) AND (r1,r2,r3) >= (1,2,3);
+SELECT * FROM pk_range_int_asc WHERE (r1, r2, r3) <= (1,6,5) AND (r1,r2,r3) < (1,6,5) AND (r1,r2,r3) > (1,2,3) AND (r1,r2,r3) < (1,6,4) AND (r1,r2,r3) >= (1,2,3) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2);
+SELECT * FROM pk_range_int_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_int_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) AND (r1,r2,r3) = (1,2,3);
+SELECT * FROM pk_range_int_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) AND (r1,r2,r3) = (1,2,3);
 DROP TABLE pk_range_int_asc;
 
+-- test row comparison expressions where we have differing column orderings
 CREATE TABLE pk_range_asc_desc_asc (r1 BIGINT, r2 INT, r3 INT, v INT, PRIMARY KEY(r1 asc, r2 desc, r3 asc));
 INSERT INTO pk_range_asc_desc_asc SELECT i/100, (i/10) % 10, i % 10, i FROM generate_series(1, 1000) AS i;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) <= (6,7,8);
 SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) <= (6,7,8) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) >= (8,7,3);
 SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) >= (8,7,3) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) > (8,7,3);
+SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) > (8,7,3) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7);
 SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7) ORDER BY r1 DESC, r2 ASC, r3 DESC;
 SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7) ORDER BY r1 DESC, r2 ASC, r3 DESC LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2);
+SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) AND (r1,r2,r3) = (1,2,3);
+SELECT * FROM pk_range_asc_desc_asc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) AND (r1,r2,r3) = (1,2,3);
 DROP TABLE pk_range_asc_desc_asc;
 
 CREATE TABLE pk_range_desc_asc_desc (r1 BIGINT, r2 INT, r3 INT, v INT, PRIMARY KEY(r1 desc, r2 asc, r3 desc));
@@ -346,4 +365,8 @@ EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_des
 SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7) LIMIT 10;
 EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7) ORDER BY r1 DESC, r2 ASC, r3 DESC;
 SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r2, r3) >= (8,7,3) AND (r1, r2, r3) <= (9,5,7) ORDER BY r1 DESC, r2 ASC, r3 DESC LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2);
+SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) LIMIT 10;
+EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) AND (r1,r2,r3) = (1,2,3);
+SELECT * FROM pk_range_desc_asc_desc WHERE (r1, r3) <= (1,5) AND (r1,r2) < (1,6) AND (r1,r2) >= (1,2) AND (r1,r2,r3) = (1,2,3);
 DROP TABLE pk_range_desc_asc_desc;

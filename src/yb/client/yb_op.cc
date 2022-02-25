@@ -720,8 +720,7 @@ namespace {
 
 Status GetRangeComponents(
     const Schema& schema, const google::protobuf::RepeatedPtrField<PgsqlExpressionPB>& range_cols,
-    std::vector<docdb::PrimitiveValue>* range_components,
-    bool lower_bound) {
+    std::vector<docdb::PrimitiveValue>* range_components, bool lower_bound) {
   int i = 0;
   auto num_range_key_columns = narrow_cast<int>(schema.num_range_key_columns());
   for (const auto& col_id : schema.column_ids()) {
@@ -731,11 +730,8 @@ Status GetRangeComponents(
 
     const ColumnSchema& column_schema = VERIFY_RESULT(schema.column_by_id(col_id));
     if (i >= range_cols.size() || range_cols[i].value().value_case() == QLValuePB::VALUE_NOT_SET) {
-      if (lower_bound) {
-        range_components->emplace_back(docdb::ValueType::kLowest);
-      } else {
-          range_components->emplace_back(docdb::ValueType::kHighest);
-      }
+      range_components->emplace_back(lower_bound ? docdb::ValueType::kLowest
+                                                : docdb::ValueType::kHighest);
     } else {
       range_components->push_back(docdb::PrimitiveValue::FromQLValuePB(
           range_cols[i].value(), column_schema.sorting_type()));

@@ -920,18 +920,20 @@ Status PgApiImpl::DmlBindColumnCondIn(PgStatement *handle, int attr_num, int n_a
   return down_cast<PgDmlRead*>(handle)->BindColumnCondIn(attr_num, n_attr_values, attr_values);
 }
 
-Status PgApiImpl::DmlBindRowUpperBound(YBCPgStatement handle,
-    int n_col_values, PgExpr **col_values) {
-    return down_cast<PgDmlRead*>(handle)->BindRowUpperBound(handle,
+Status PgApiImpl::DmlAddRowUpperBound(YBCPgStatement handle,
+    int n_col_values, PgExpr **col_values, bool is_inclusive) {
+    return down_cast<PgDmlRead*>(handle)->AddRowUpperBound(handle,
                                                         n_col_values,
-                                                        col_values);
+                                                        col_values,
+                                                        is_inclusive);
 }
 
-Status PgApiImpl::DmlBindRowLowerBound(YBCPgStatement handle,
-    int n_col_values, PgExpr **col_values) {
-    return down_cast<PgDmlRead*>(handle)->BindRowLowerBound(handle,
+Status PgApiImpl::DmlAddRowLowerBound(YBCPgStatement handle,
+    int n_col_values, PgExpr **col_values, bool is_inclusive) {
+    return down_cast<PgDmlRead*>(handle)->AddRowLowerBound(handle,
                                                         n_col_values,
-                                                        col_values);
+                                                        col_values,
+                                                        is_inclusive);
 }
 
 Status PgApiImpl::DmlBindHashCode(PgStatement *handle, bool start_valid,
