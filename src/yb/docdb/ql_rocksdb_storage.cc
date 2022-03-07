@@ -195,7 +195,6 @@ Status QLRocksDBStorage::GetIterator(const PgsqlReadRequestPB& request,
             lower_doc_key.AddRangeComponent(
                 PrimitiveValue(docdb::ValueType::kHighest));
         }
-        LOG(INFO) << "WE HAVE A LOWER BOUND";
     }
 
     DocKey upper_doc_key(schema);

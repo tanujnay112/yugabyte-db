@@ -1007,10 +1007,10 @@ ybcBindScanKeys(YbScanDesc ybScan, YbScanPlan scan_plan) {
 									(index->rd_indoption[
 										subkeys[0].sk_attno - 1] 
 										& INDOPTION_DESC) == 0;
-				bool gt = (strategy == BTGreaterEqualStrategyNumber
-								|| strategy == BTGreaterStrategyNumber);
-				bool is_inclusive = !(strategy == BTGreaterStrategyNumber
-										|| strategy == BTLessStrategyNumber);
+				bool gt = strategy == BTGreaterEqualStrategyNumber
+								|| strategy == BTGreaterStrategyNumber;
+				bool is_inclusive = strategy != BTGreaterStrategyNumber
+										&& strategy != BTLessStrategyNumber;
 				
 				bool is_point_scan = (count == index->rd_index->indnatts)
 										&& (strategy == BTEqualStrategyNumber);

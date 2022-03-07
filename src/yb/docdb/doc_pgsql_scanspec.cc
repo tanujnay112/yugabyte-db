@@ -163,8 +163,6 @@ DocPgsqlScanSpec::DocPgsqlScanSpec(
       upper_doc_key_(upper_doc_key.Encode()),
       is_forward_scan_(is_forward_scan) {
 
-  LOG(INFO) << "changes: LOWER KEY1 IS " << DocKey::DebugSliceToString(lower_doc_key_);
-  LOG(INFO) << "changes: UPPER KEY1 IS " << DocKey::DebugSliceToString(upper_doc_key_);
   auto lower_bound_key = bound_key(schema, true);
   lower_doc_key_ = lower_bound_key > lower_doc_key_
                     || lower_doc_key.empty()
@@ -174,9 +172,6 @@ DocPgsqlScanSpec::DocPgsqlScanSpec(
   upper_doc_key_ = upper_bound_key < upper_doc_key_
                     || upper_doc_key.empty()
                     ? upper_bound_key : upper_doc_key_;
-
-  LOG(INFO) << "changes: LOWER KEY2 IS " << DocKey::DebugSliceToString(bound_key(schema, true));
-  LOG(INFO) << "changes: UPPER KEY2 IS " << DocKey::DebugSliceToString(bound_key(schema, false));
 
   if (where_expr_) {
     // Should never get here until WHERE clause is supported.
