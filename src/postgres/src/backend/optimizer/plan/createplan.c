@@ -3572,6 +3572,7 @@ create_indexscan_plan(PlannerInfo *root,
 	 */
 	if (best_path->path.param_info)
 	{
+		// TODO make sure we're not here for hash joins
 		stripped_indexquals = (List *)
 			replace_nestloop_params(root, (Node *) stripped_indexquals);
 		local_qual = (List *)
@@ -5306,6 +5307,81 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 	return expression_tree_mutator(node,
 								   replace_nestloop_params_mutator,
 								   (void *) root);
+}
+
+static Node *
+batch_nestloop_params(PlannerInfo *root, Node *expr)
+{
+	/* No setup needed for tree walk, so away we go */
+	return batch_nestloop_params_mutator(expr, root);
+}
+
+static Node *
+batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, Param))
+	{
+		Param *param = (Param *) node;
+
+		if (param->paramkind != PARAM_EXEC || param->location == -1) {
+			return node;
+		}
+
+		return (Node *) batch_nestloop_param(root, param);
+	}
+
+	Node * ret = expression_tree_mutator(node,
+								   		 batch_nestloop_params_mutator,
+								   		 (void *) root);
+	if (IsA(ret, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr*) ret;
+		
+		// TODO: Check if this is an equality
+		
+		if (IsA(lsecond(opexpr->args), List))
+		{
+			List *batched_param_list = (List *) lsecond(opexpr->args);
+			Assert(yb_nl_batch_size > 1);
+			Assert(batched_param_list->length == yb_nl_batch_size);
+			Assert(IsA(linitial(batched_param_list), Param));
+
+			ScalarArrayOpExpr *saop = makeNode(ScalarArrayOpExpr);
+			saop->opno = opexpr->opno;
+			saop->opfuncid = opexpr->opfuncid;
+			saop->useOr = true;
+
+			Param *firstparam = (Param*) linitial(batched_param_list);
+
+			ArrayExpr *arrexpr = makeNode(ArrayExpr);
+			Oid scalar_type = firstparam->paramtype;
+			Oid array_type;
+			if (OidIsValid(scalar_type) && scalar_type != RECORDOID)
+				array_type = get_array_type(scalar_type);
+			else
+				array_type = InvalidOid;
+
+			arrexpr->array_typeid = array_type;
+			arrexpr->element_typeid = scalar_type;
+			arrexpr->multidims = false;
+			arrexpr->array_collid = firstparam->paramcollid;
+			arrexpr->elements = batched_param_list;
+
+			List *saopargs = NIL;
+			saopargs = lappend(saopargs, copyObject(linitial(opexpr->args)));
+			saopargs = lappend(saopargs, arrexpr);
+
+			saop->args = saopargs;
+			saop->inputcollid = firstparam->paramcollid;
+			saop->location = -1;
+			return (Node*)saop;
+			// TODO: think about memory leak here on replaced expr?
+		}
+	}
+	return ret;
 }
 
 /*
