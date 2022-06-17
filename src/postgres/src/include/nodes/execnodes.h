@@ -1771,6 +1771,16 @@ typedef struct JoinState
 	ExprState  *joinqual;		/* JOIN quals (in addition to ps.qual) */
 } JoinState;
 
+
+typedef enum NestLoopStatus
+{
+	NL_STARTING,
+	NL_BATCHING,
+	NL_INNERLOOPING,
+	NL_FLUSHING,
+	NL_DONE
+} NestLoopStatus;
+
 /* ----------------
  *	 NestLoopState information
  *
@@ -1783,8 +1793,11 @@ typedef struct NestLoopState
 {
 	JoinState	js;				/* its first field is NodeTag */
 	bool		nl_NeedNewOuter;
+	bool		nl_NeedNewInner;
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
+	Tuplestorestate *batchedtuplestorestate;
+	NestLoopStatus nl_currentstatus;
 } NestLoopState;
 
 /* ----------------

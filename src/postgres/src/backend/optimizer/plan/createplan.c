@@ -81,6 +81,7 @@
 #define CP_LABEL_TLIST		0x0004	/* tlist must contain sortgrouprefs */
 #define CP_IGNORE_TLIST		0x0008	/* caller will replace tlist */
 
+int yb_nl_batch_size = 1;
 
 static Plan *create_plan_recurse(PlannerInfo *root, Path *best_path,
 					int flags);
@@ -176,6 +177,8 @@ static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path)
 static HashJoin *create_hashjoin_plan(PlannerInfo *root, HashPath *best_path);
 static Node *replace_nestloop_params(PlannerInfo *root, Node *expr);
 static Node *replace_nestloop_params_mutator(Node *node, PlannerInfo *root);
+static Node *batch_nestloop_params(PlannerInfo *root, Node *expr);
+static Node *batch_nestloop_params_mutator(Node *node, PlannerInfo *root);
 static List *fix_indexqual_references(PlannerInfo *root, IndexPath *index_path);
 static List *fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path);
 static Node *fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol);
@@ -3557,12 +3560,22 @@ create_indexscan_plan(PlannerInfo *root,
 	 */
 	if (best_path->path.param_info)
 	{
+		// TODO make sure we're not here for hash joins
 		stripped_indexquals = (List *)
 			replace_nestloop_params(root, (Node *) stripped_indexquals);
 		local_qual = (List *)
 			replace_nestloop_params(root, (Node *) local_qual);
 		indexorderbys = (List *)
 			replace_nestloop_params(root, (Node *) indexorderbys);
+		
+		if (yb_nl_batch_size > 1) {
+			stripped_indexquals = (List *)
+				batch_nestloop_params(root, (Node *) stripped_indexquals);
+			qpqual = (List *) batch_nestloop_params(root, (Node *) qpqual);
+			indexorderbys = (List *)
+				batch_nestloop_params(root, (Node *) indexorderbys);
+
+		}
 	}
 
 	/*
@@ -5227,6 +5240,81 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 								   (void *) root);
 }
 
+static Node *
+batch_nestloop_params(PlannerInfo *root, Node *expr)
+{
+	/* No setup needed for tree walk, so away we go */
+	return batch_nestloop_params_mutator(expr, root);
+}
+
+static Node *
+batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, Param))
+	{
+		Param *param = (Param *) node;
+
+		if (param->paramkind != PARAM_EXEC || param->location == -1) {
+			return node;
+		}
+
+		return (Node *) batch_nestloop_param(root, param);
+	}
+
+	Node * ret = expression_tree_mutator(node,
+								   		 batch_nestloop_params_mutator,
+								   		 (void *) root);
+	if (IsA(ret, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr*) ret;
+		
+		// TODO: Check if this is an equality
+		
+		if (IsA(lsecond(opexpr->args), List))
+		{
+			List *batched_param_list = (List *) lsecond(opexpr->args);
+			Assert(yb_nl_batch_size > 1);
+			Assert(batched_param_list->length == yb_nl_batch_size);
+			Assert(IsA(linitial(batched_param_list), Param));
+
+			ScalarArrayOpExpr *saop = makeNode(ScalarArrayOpExpr);
+			saop->opno = opexpr->opno;
+			saop->opfuncid = opexpr->opfuncid;
+			saop->useOr = true;
+
+			Param *firstparam = (Param*) linitial(batched_param_list);
+
+			ArrayExpr *arrexpr = makeNode(ArrayExpr);
+			Oid scalar_type = firstparam->paramtype;
+			Oid array_type;
+			if (OidIsValid(scalar_type) && scalar_type != RECORDOID)
+				array_type = get_array_type(scalar_type);
+			else
+				array_type = InvalidOid;
+
+			arrexpr->array_typeid = array_type;
+			arrexpr->element_typeid = scalar_type;
+			arrexpr->multidims = false;
+			arrexpr->array_collid = firstparam->paramcollid;
+			arrexpr->elements = batched_param_list;
+
+			List *saopargs = NIL;
+			saopargs = lappend(saopargs, copyObject(linitial(opexpr->args)));
+			saopargs = lappend(saopargs, arrexpr);
+
+			saop->args = saopargs;
+			saop->inputcollid = firstparam->paramcollid;
+			saop->location = -1;
+			return (Node*)saop;
+			// TODO: think about memory leak here on replaced expr?
+		}
+	}
+	return ret;
+}
+
 /*
  * fix_indexqual_references
  *	  Adjust indexqual clauses to the form the executor's indexqual
@@ -5269,6 +5357,10 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path)
 		 * in-place below.
 		 */
 		clause = replace_nestloop_params(root, (Node *) rinfo->clause);
+		if (yb_nl_batch_size > 1)
+		{
+			clause = batch_nestloop_params(root, (Node *) clause);
+		}
 
 		if (IsA(clause, OpExpr))
 		{

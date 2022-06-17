@@ -750,6 +750,7 @@ typedef struct NestLoopParam
 	NodeTag		type;
 	int			paramno;		/* number of the PARAM_EXEC Param to set */
 	Var		   *paramval;		/* outer-relation Var to assign to Param */
+	List	   *batchedparams;	/* List of ints (paramnos) */
 } NestLoopParam;
 
 /* ----------------

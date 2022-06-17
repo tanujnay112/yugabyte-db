@@ -307,6 +307,8 @@ replace_outer_grouping(PlannerInfo *root, GroupingFunc *grp)
 	return retval;
 }
 
+extern int yb_nl_batch_size;
+
 /*
  * Generate a Param node to replace the given Var,
  * which is expected to come from some upper NestLoop plan node.
@@ -352,6 +354,67 @@ replace_nestloop_param_var(PlannerInfo *root, Var *var)
 
 	/* And return the replacement Param */
 	return param;
+}
+
+List *
+batch_nestloop_param(PlannerInfo *root, Param *param)
+{
+	Assert(yb_nl_batch_size > 1);
+	List *paramnolist = NIL;
+	NestLoopParam *nlp;
+	ListCell   *lc;
+	bool found = false;
+	List *paramlist = NIL;
+
+	foreach(lc, root->curOuterParams)
+	{
+		nlp = (NestLoopParam *) lfirst(lc);
+		if (nlp->paramno == param->paramid)
+		{
+			if (nlp->batchedparams != NIL)
+			{
+				ListCell *l;
+				List *paramlist = NIL;
+				foreach(l, nlp->batchedparams)
+				{
+					int paramno = lfirst_int(l);
+					Param *new_param = makeNode(Param);
+					new_param->paramkind = PARAM_EXEC;
+					new_param->paramid = paramno;
+					new_param->paramtype = param->paramtype;
+					new_param->paramtypmod = param->paramtypmod;
+					new_param->paramcollid = param->paramcollid;
+					new_param->location = -1;
+					paramlist = lappend(paramlist, new_param);
+				}
+				return paramlist;
+			}
+			else
+			{
+				found = true;
+				break;
+			}
+		}
+	}
+
+	Assert(found);
+	Var *var = nlp->paramval;
+	paramnolist = lappend_int(paramnolist, nlp->paramno);
+	paramlist = lappend(paramlist, param);
+	for (size_t i = 1; i < yb_nl_batch_size; i++)
+	{
+		Param *param = generate_new_exec_param(root,
+											   var->vartype,
+											   var->vartypmod,
+											   var->varcollid);
+		param->location = -1;
+
+		paramlist = lappend(paramlist, param);
+		paramnolist = lappend_int(paramnolist, param->paramid);
+	}
+
+	nlp->batchedparams = paramnolist;
+	return paramlist;
 }
 
 /*

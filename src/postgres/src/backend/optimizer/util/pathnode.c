@@ -2214,6 +2214,8 @@ calc_non_nestloop_required_outer(Path *outer_path, Path *inner_path)
 	return required_outer;
 }
 
+extern int yb_nl_batch_size;
+
 /*
  * create_nestloop_path
  *	  Creates a pathnode corresponding to a nestloop join between two
@@ -2253,7 +2255,8 @@ create_nestloop_path(PlannerInfo *root,
 	 * because the restrict_clauses list can affect the size and cost
 	 * estimates for this path.
 	 */
-	if (bms_overlap(inner_req_outer, outer_path->parent->relids))
+	if (yb_nl_batch_size <= 1
+		&& bms_overlap(inner_req_outer, outer_path->parent->relids))
 	{
 		Relids		inner_and_outer = bms_union(inner_path->parent->relids,
 												inner_req_outer);

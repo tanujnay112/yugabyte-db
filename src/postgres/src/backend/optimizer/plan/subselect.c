@@ -2360,6 +2360,17 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 
 					nestloop_params = bms_add_member(nestloop_params,
 													 nlp->paramno);
+					List *batchedparams = nlp->batchedparams;
+					if (batchedparams)
+					{
+						ListCell *lc;
+						foreach(lc, batchedparams)
+						{
+							int paramno = lfirst_int(lc);
+							nestloop_params =
+								bms_add_member(nestloop_params, paramno);
+						}
+					}
 				}
 			}
 			break;

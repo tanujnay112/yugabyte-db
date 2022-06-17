@@ -2155,6 +2155,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"yb_nl_batch_size", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Batch size of nested loop joins"),
+			gettext_noop("Set to 1 to turn off"),
+			GUC_NOT_IN_SAMPLE | GUC_UNIT_S
+		},
+		&yb_nl_batch_size,
+		1, 1, 1024,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"default_statistics_target", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Sets the default statistics target."),
 			gettext_noop("This applies to table columns that have not had a "
