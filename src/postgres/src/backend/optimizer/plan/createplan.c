@@ -3574,7 +3574,6 @@ create_indexscan_plan(PlannerInfo *root,
 			qpqual = (List *) batch_nestloop_params(root, (Node *) qpqual);
 			indexorderbys = (List *)
 				batch_nestloop_params(root, (Node *) indexorderbys);
-
 		}
 	}
 
@@ -5273,9 +5272,23 @@ batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
 		
 		// TODO: Check if this is an equality
 		
-		if (IsA(lsecond(opexpr->args), List))
+		if ((IsA(lsecond(opexpr->args), List)
+			 && IsA(linitial(opexpr->args), Var))
+			|| (IsA(linitial(opexpr->args), List)
+				&& IsA(lsecond(opexpr->args), Var)))
 		{
-			List *batched_param_list = (List *) lsecond(opexpr->args);
+			Var *var;
+			List *batched_param_list;
+			if (IsA(lsecond(opexpr->args), Var))
+			{
+				var = (Var *) lsecond(opexpr->args);
+				batched_param_list = (List *) linitial(opexpr->args);
+			}
+			else
+			{
+				var = (Var *) linitial(opexpr->args);
+				batched_param_list = (List *) lsecond(opexpr->args);
+			}
 			Assert(yb_nl_batch_size > 1);
 			Assert(batched_param_list->length == yb_nl_batch_size);
 			Assert(IsA(linitial(batched_param_list), Param));
@@ -5302,7 +5315,7 @@ batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
 			arrexpr->elements = batched_param_list;
 
 			List *saopargs = NIL;
-			saopargs = lappend(saopargs, copyObject(linitial(opexpr->args)));
+			saopargs = lappend(saopargs, copyObject(var));
 			saopargs = lappend(saopargs, arrexpr);
 
 			saop->args = saopargs;

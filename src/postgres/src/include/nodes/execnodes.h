@@ -1794,8 +1794,11 @@ typedef struct NestLoopState
 	bool		nl_NeedNewInner;
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
+
 	Tuplestorestate *batchedtuplestorestate;
 	NLBatchStatus nl_currentstatus;
+	List *nl_batchedmatchedinfo;
+	int nl_batchtupno;
 } NestLoopState;
 
 /* ----------------
