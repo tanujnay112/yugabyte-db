@@ -1772,14 +1772,12 @@ typedef struct JoinState
 } JoinState;
 
 
-typedef enum NestLoopStatus
+typedef enum NLBatchStatus
 {
-	NL_STARTING,
+	NL_INIT,
 	NL_BATCHING,
-	NL_INNERLOOPING,
-	NL_FLUSHING,
-	NL_DONE
-} NestLoopStatus;
+	NL_FLUSHING
+} NLBatchStatus;
 
 /* ----------------
  *	 NestLoopState information
@@ -1797,7 +1795,7 @@ typedef struct NestLoopState
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
 	Tuplestorestate *batchedtuplestorestate;
-	NestLoopStatus nl_currentstatus;
+	NLBatchStatus nl_currentstatus;
 } NestLoopState;
 
 /* ----------------

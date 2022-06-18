@@ -30,6 +30,8 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext);
 bool FlushTuple(NestLoopState *node, ExprContext *econtext);
 int GetBatchSize(NestLoop *node);
 bool IsBatched(NestLoop *node);
+bool GetNewOuterTuple(NestLoopState *node, ExprContext *econtext);
+void ResetBatch(NestLoopState *node, ExprContext *econtext);
 
 /* ----------------------------------------------------------------
  *		ExecNestLoop(node)
@@ -67,8 +69,8 @@ ExecNestLoop(PlanState *pstate)
 	NestLoopState *node = castNode(NestLoopState, pstate);
 	NestLoop   *nl;
 	PlanState  *innerPlan;
-	PlanState  *outerPlan;
-	TupleTableSlot *outerTupleSlot;
+	// PlanState  *outerPlan;
+	// TupleTableSlot *outerTupleSlot;
 	TupleTableSlot *innerTupleSlot;
 	ExprState  *joinqual;
 	ExprState  *otherqual;
@@ -84,7 +86,7 @@ ExecNestLoop(PlanState *pstate)
 	nl = (NestLoop *) node->js.ps.plan;
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
-	outerPlan = outerPlanState(node);
+	// outerPlan = outerPlanState(node);
 	innerPlan = innerPlanState(node);
 	econtext = node->js.ps.ps_ExprContext;
 
@@ -107,7 +109,13 @@ ExecNestLoop(PlanState *pstate)
 		{
 			bool success = FlushTuple(node, econtext);
 			if (success)
-				node->nl_currentstatus = NL_BATCHING;
+			{
+				node->nl_NeedNewOuter = false;
+				node->nl_NeedNewInner = false;
+				goto innerscan;
+			}
+			/* tuplestate should be clean */
+			node->nl_currentstatus = NL_INIT;
 		}
 		/*
 		 * If we don't have an outer tuple, get the next one and reset the
@@ -115,34 +123,31 @@ ExecNestLoop(PlanState *pstate)
 		 */
 		if (node->nl_NeedNewOuter)
 		{
-			Tuplestorestate *outertuples = node->batchedtuplestorestate;
-			if (outertuples)
+			if (node->nl_currentstatus == NL_BATCHING)
 			{
-				if (!tuplestore_ateof(outertuples)
-					&& tuplestore_tuple_count(outertuples) > 0
-					&& tuplestore_gettupleslot(outertuples, true, false,
-											   econtext->ecxt_outertuple))
+				Tuplestorestate *outertuples = node->batchedtuplestorestate;
+				if (outertuples)
 				{
-					outerTupleSlot = econtext->ecxt_outertuple;
-					node->nl_NeedNewInner = false;
+					if(!GetNewOuterTuple(node, econtext))
+					{
+						node->nl_NeedNewInner = true;
+						ResetBatch(node, econtext);
+					}
+					else
+					{
+						node->nl_NeedNewInner = false;
+					}
 					goto innerscan;
 				}
-				/* We are at the end of our batch, if there are more inner tuples
-				 * then lets go, otherwise, make new batch */
-				node->nl_NeedNewInner = true;
-				if (!TupIsNull(econtext->ecxt_innertuple))
-				{
-					tuplestore_rescan(outertuples);
-					tuplestore_gettupleslot(outertuples, true, false,
-											econtext->ecxt_outertuple);
-					outerTupleSlot = econtext->ecxt_outertuple;
-					goto innerscan;
-				}
-
-				tuplestore_clear(outertuples);
+			}
+			else
+			{
+				Assert(node->nl_currentstatus == NL_INIT);
+				node->nl_currentstatus = NL_BATCHING;
 			}
 
 			/* create batch */
+			Assert(node->nl_currentstatus == NL_BATCHING || !IsBatched(nl));
 			bool success = CreateBatch(node, econtext);
 			if (!success)
 				return NULL;
@@ -151,11 +156,6 @@ ExecNestLoop(PlanState *pstate)
 			*/
 			ENL1_printf("rescanning inner plan");
 			ExecReScan(innerPlan);
-			node->nl_NeedNewInner = true;
-			if (node->batchedtuplestorestate)
-			{
-				tuplestore_rescan(node->batchedtuplestorestate);
-			}
 		}
 
 	innerscan:
@@ -169,8 +169,6 @@ ExecNestLoop(PlanState *pstate)
 		{
 			innerTupleSlot = ExecProcNode(innerPlan);
 			econtext->ecxt_innertuple = innerTupleSlot;
-			// if (outertuples && !TupIsNull(innerTupleSlot))
-			// 	tuplestore_rescan(outertuples);
 		}
 		innerTupleSlot = econtext->ecxt_innertuple;
 		node->nl_NeedNewInner = false;
@@ -302,12 +300,11 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 		/*
 		* if there are no more outer tuples, then the join is complete..
 		*/
-		if (TupIsNull(outerTupleSlot))
+		if (outer_done || TupIsNull(outerTupleSlot))
 		{
 			if (batchno == 0)
 			{
 				ENL1_printf("no outer tuple, ending join");
-				node->nl_currentstatus = NL_DONE;
 				return false;
 			}
 			else
@@ -327,12 +324,12 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 			}
 		}
 
-		if (outer_done)
-		{
-			tuplestore_gettupleslot(node->batchedtuplestorestate,
-									true, false, outerTupleSlot);
-			econtext->ecxt_outertuple = outerTupleSlot;
-		}
+		// if (outer_done)
+		// {
+		// 	tuplestore_gettupleslot(node->batchedtuplestorestate,
+		// 							true, false, outerTupleSlot);
+		// 	econtext->ecxt_outertuple = outerTupleSlot;
+		// }
 
 		node->nl_NeedNewOuter = false;
 		node->nl_MatchedOuter = false;
@@ -362,19 +359,34 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 			Assert(IsA(nlp->paramval, Var));
 			Assert(nlp->paramval->varno == OUTER_VAR);
 			Assert(nlp->paramval->varattno > 0);
-			prm->value = slot_getattr(outerTupleSlot,
-										nlp->paramval->varattno,
-										&(prm->isnull));
+			if (!outer_done)
+			{
+				prm->value = slot_getattr(outerTupleSlot,
+											nlp->paramval->varattno,
+											&(prm->isnull));
+			}
+			else
+			{
+				prm->isnull = true;
+			}
 			/* Flag parameter value as changed */
 			innerPlan->chgParam = bms_add_member(innerPlan->chgParam,
 													paramno);
 		}
 	}
+
+	if (IsBatched(nl))
+	{
+		tuplestore_rescan(node->batchedtuplestorestate);
+		tuplestore_gettupleslot(node->batchedtuplestorestate, true, false, econtext->ecxt_outertuple);
+	}
+
 	return true;
 }
 
 bool FlushTuple(NestLoopState *node, ExprContext *econtext)
 {
+	tuplestore_clear(node->batchedtuplestorestate);
 	return false;
 }
 
@@ -387,6 +399,29 @@ int GetBatchSize(NestLoop *node)
 bool IsBatched(NestLoop *node)
 {
 	return GetBatchSize(node) > 1;
+}
+
+bool GetNewOuterTuple(NestLoopState *node, ExprContext *econtext)
+{
+	Tuplestorestate *outertuples = node->batchedtuplestorestate;
+	if (!tuplestore_ateof(outertuples)
+		&& tuplestore_tuple_count(outertuples) > 0
+		&& tuplestore_gettupleslot(outertuples,
+								   true,
+								   false,
+								   econtext->ecxt_outertuple))
+	{
+		return true;
+	}
+	return false;
+}
+
+void ResetBatch(NestLoopState *node, ExprContext *econtext)
+{
+	Tuplestorestate *outertuples = node->batchedtuplestorestate;
+	tuplestore_rescan(outertuples);
+	tuplestore_gettupleslot(outertuples, true, false,
+							econtext->ecxt_outertuple);
 }
 
 /* ----------------------------------------------------------------
@@ -417,6 +452,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	{
 		nlstate->batchedtuplestorestate =
 			tuplestore_begin_heap(true, false, work_mem);
+		nlstate->nl_currentstatus = NL_INIT;
 	}
 
 	/*
