@@ -1776,8 +1776,25 @@ typedef enum NLBatchStatus
 {
 	NL_INIT,
 	NL_BATCHING,
-	NL_FLUSHING
+	NL_FLUSHING,
+	NL_NOBATCH
 } NLBatchStatus;
+
+typedef struct NLBucketInfo
+{
+	ListCell *current;
+	List *tuples;
+	bool matched;
+} NLBucketInfo;
+
+struct NestLoopState;
+
+typedef bool (*FlushTupleFn_t)(struct NestLoopState *, ExprContext *);
+typedef bool (*GetNewOuterTupleFn_t)(struct NestLoopState *node, ExprContext *econtext);
+typedef void (*ResetBatchFn_t)(struct NestLoopState *node, ExprContext *econtext);
+typedef void (*RegisterOuterMatchFn_t)(struct NestLoopState *node, ExprContext *econtext);
+typedef void (*AddTupleToOuterBatchFn_t)(struct NestLoopState *node, TupleTableSlot *slot);
+typedef void (*FreeBatchFn_t)(struct NestLoopState *node);
 
 /* ----------------
  *	 NestLoopState information
@@ -1799,6 +1816,22 @@ typedef struct NestLoopState
 	NLBatchStatus nl_currentstatus;
 	List *nl_batchedmatchedinfo;
 	int nl_batchtupno;
+	
+	TupleHashTable hashtable;
+	TupleTableSlot *hashslot;
+	bool hashiterinit;
+	TupleHashIterator hashiter;
+	FmgrInfo *hashFunctions;
+	int numLookupAttrs;
+	AttrNumber *innerAttrs;
+	TupleHashEntry current_hash_entry;
+
+	FlushTupleFn_t FlushTupleImpl;
+	GetNewOuterTupleFn_t GetNewOuterTupleImpl;
+	ResetBatchFn_t ResetBatchImpl;
+	RegisterOuterMatchFn_t RegisterOuterMatchImpl;
+	AddTupleToOuterBatchFn_t AddTupleToOuterBatchImpl;
+	FreeBatchFn_t FreeBatchImpl;
 } NestLoopState;
 
 /* ----------------

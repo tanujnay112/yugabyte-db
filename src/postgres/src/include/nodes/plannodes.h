@@ -743,6 +743,8 @@ typedef struct NestLoop
 {
 	Join		join;
 	List	   *nestParams;		/* list of NestLoopParam nodes */
+	List	   *hashOps;
+	List	   *innerHashAttNos;
 } NestLoop;
 
 typedef struct NestLoopParam

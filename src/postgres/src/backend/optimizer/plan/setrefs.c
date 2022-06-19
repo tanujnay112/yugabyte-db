@@ -1681,6 +1681,38 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 				  nlp->paramval->varno == OUTER_VAR))
 				elog(ERROR, "NestLoopParam was not reduced to a simple Var");
 		}
+			List *innerAttNos = NIL;
+
+		ListCell *l;
+		ListCell *ll = list_head(nl->hashOps);
+		foreach(l, join->joinqual)
+		{
+			Expr *clause = (Expr *) lfirst(l);
+			Oid hashOp = lfirst_oid(ll);
+			if (OidIsValid(hashOp))
+			{
+				// if nlhash can process this
+				Assert(IsA(clause, OpExpr));
+				OpExpr *opexpr = (OpExpr *) clause;
+				Assert(opexpr->args->length == 2);
+				Assert(IsA(linitial(opexpr->args), Var));
+				Assert(IsA(lsecond(opexpr->args), Var));
+				Var *leftArg = (Var *) linitial(opexpr->args);
+				Var *rightarg = (Var *) lsecond(opexpr->args);
+
+				Var *innerArg = leftArg->varno == INNER_VAR
+								? leftArg
+								: rightarg;
+				
+				Assert(innerArg->varno = INNER_VAR);
+
+				innerAttNos =
+					lappend_int(innerAttNos, ((Var *) innerArg)->varattno);
+			}
+			ll = lnext(ll);
+		}
+
+		nl->innerHashAttNos = innerAttNos;
 	}
 	else if (IsA(join, MergeJoin))
 	{

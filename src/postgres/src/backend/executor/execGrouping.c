@@ -99,7 +99,9 @@ execTuplesHashPrepare(int numCols,
 {
 	int			i;
 
-	*eqFuncOids = (Oid *) palloc(numCols * sizeof(Oid));
+	if (eqFuncOids)
+		*eqFuncOids = (Oid *) palloc(numCols * sizeof(Oid));
+
 	*hashFunctions = (FmgrInfo *) palloc(numCols * sizeof(FmgrInfo));
 
 	for (i = 0; i < numCols; i++)
@@ -116,7 +118,9 @@ execTuplesHashPrepare(int numCols,
 				 eq_opr);
 		/* We're not supporting cross-type cases here */
 		Assert(left_hash_function == right_hash_function);
-		(*eqFuncOids)[i] = eq_function;
+
+		if (eqFuncOids)
+			(*eqFuncOids)[i] = eq_function;
 		fmgr_info(right_hash_function, &(*hashFunctions)[i]);
 	}
 }
@@ -207,10 +211,17 @@ BuildTupleHashTableExt(PlanState *parent,
 	hashtable->tableslot = MakeSingleTupleTableSlot(CreateTupleDescCopy(inputDesc));
 
 	/* build comparator for all columns */
-	hashtable->tab_eq_func = ExecBuildGroupingEqual(inputDesc, inputDesc,
-													numCols,
-													keyColIdx, eqfuncoids,
-													NULL);
+	if (eqfuncoids == NULL)
+	{
+		hashtable->tab_eq_func = NULL;
+	}
+	else
+	{
+		hashtable->tab_eq_func = ExecBuildGroupingEqual(inputDesc, inputDesc,
+														numCols,
+														keyColIdx, eqfuncoids,
+														NULL);
+	}
 
 	/*
 	 * While not pretty, it's ok to not shut down this context, but instead
@@ -338,7 +349,9 @@ LookupTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 TupleHashEntry
 FindTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 				   ExprState *eqcomp,
-				   FmgrInfo *hashfunctions)
+				   FmgrInfo *hashfunctions,
+				   int numCols,
+				   AttrNumber *keyColIdx)
 {
 	TupleHashEntry entry;
 	MemoryContext oldContext;
@@ -352,10 +365,18 @@ FindTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 	hashtable->in_hash_funcs = hashfunctions;
 	hashtable->cur_eq_func = eqcomp;
 
+	int oldNumCols = hashtable->numCols;
+	AttrNumber *oldKeyColIdx = hashtable->keyColIdx;
+	hashtable->numCols = numCols;
+	hashtable->keyColIdx = keyColIdx;
+
 	/* Search the hash table */
 	key = NULL;					/* flag to reference inputslot */
 	entry = tuplehash_lookup(hashtable->hashtab, key);
 	MemoryContextSwitchTo(oldContext);
+
+	hashtable->numCols = oldNumCols;
+	hashtable->keyColIdx = oldKeyColIdx;
 
 	return entry;
 }
@@ -444,6 +465,11 @@ TupleHashTableMatch(struct tuplehash_hash *tb, const MinimalTuple tuple1, const 
 	TupleTableSlot *slot1;
 	TupleTableSlot *slot2;
 	TupleHashTable hashtable = (TupleHashTable) tb->private_data;
+
+	if (hashtable->cur_eq_func == NULL)
+	{
+		return 1;
+	}
 	ExprContext *econtext = hashtable->exprcontext;
 
 	/*

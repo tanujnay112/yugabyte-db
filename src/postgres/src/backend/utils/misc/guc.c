@@ -2161,7 +2161,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_NOT_IN_SAMPLE | GUC_UNIT_S
 		},
 		&yb_nl_batch_size,
-		1, 1, 1024,
+		2, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 

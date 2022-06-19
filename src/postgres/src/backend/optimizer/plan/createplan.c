@@ -83,6 +83,11 @@
 
 int yb_nl_batch_size = 1;
 
+typedef struct ExpressionBatchCtx {
+	PlannerInfo *plannerinfo;
+	IndexPath *indexpath;
+} ExpressionBatchCtx;
+
 static Plan *create_plan_recurse(PlannerInfo *root, Path *best_path,
 					int flags);
 static Plan *create_scan_plan(PlannerInfo *root, Path *best_path,
@@ -177,8 +182,9 @@ static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path)
 static HashJoin *create_hashjoin_plan(PlannerInfo *root, HashPath *best_path);
 static Node *replace_nestloop_params(PlannerInfo *root, Node *expr);
 static Node *replace_nestloop_params_mutator(Node *node, PlannerInfo *root);
-static Node *batch_nestloop_params(PlannerInfo *root, Node *expr);
-static Node *batch_nestloop_params_mutator(Node *node, PlannerInfo *root);
+static Node *batch_nestloop_params(PlannerInfo *root, Node *expr,
+								   IndexPath *indexpath);
+static Node *batch_nestloop_params_mutator(Node *node, ExpressionBatchCtx *ctx);
 static List *fix_indexqual_references(PlannerInfo *root, IndexPath *index_path);
 static List *fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path);
 static Node *fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol);
@@ -250,7 +256,8 @@ static BitmapOr *make_bitmap_or(List *bitmapplans);
 static NestLoop *make_nestloop(List *tlist,
 			  List *joinclauses, List *otherclauses, List *nestParams,
 			  Plan *lefttree, Plan *righttree,
-			  JoinType jointype, bool inner_unique);
+			  JoinType jointype, bool inner_unique, List *hashOps,
+			  List *innerHashAttNos);
 static HashJoin *make_hashjoin(List *tlist,
 			  List *joinclauses, List *otherclauses,
 			  List *hashclauses,
@@ -3568,12 +3575,15 @@ create_indexscan_plan(PlannerInfo *root,
 		indexorderbys = (List *)
 			replace_nestloop_params(root, (Node *) indexorderbys);
 		
-		if (yb_nl_batch_size > 1) {
+		if (yb_nl_batch_size > 1)
+		{
 			stripped_indexquals = (List *)
-				batch_nestloop_params(root, (Node *) stripped_indexquals);
-			qpqual = (List *) batch_nestloop_params(root, (Node *) qpqual);
+				batch_nestloop_params(root, (Node *) stripped_indexquals,
+									  best_path);
+			qpqual = (List *) batch_nestloop_params(root, (Node *) qpqual,
+													best_path);
 			indexorderbys = (List *)
-				batch_nestloop_params(root, (Node *) indexorderbys);
+				batch_nestloop_params(root, (Node *) indexorderbys, best_path);
 		}
 	}
 
@@ -4685,6 +4695,43 @@ create_nestloop_plan(PlannerInfo *root,
 	outerrelids = best_path->outerjoinpath->parent->relids;
 	nestParams = identify_current_nestloop_params(root, outerrelids);
 
+	// Relids innerrelids = best_path->innerjoinpath->parent->relids;
+
+	List *hashOps = NIL;
+	List *innerAttNos = NIL;
+
+	ListCell *l;
+	foreach(l, joinrestrictclauses)
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(l);
+		if (rinfo->can_join && OidIsValid(rinfo->hashjoinoperator))
+		{
+			// if nlhash can process this
+			Assert(is_opclause(rinfo->clause));
+			hashOps = lappend_oid(hashOps, rinfo->hashjoinoperator);
+			// OpExpr *opexpr = (OpExpr *) rinfo->clause;
+			// Expr *leftarg = rinfo->outer_is_left ?
+			// 	(Expr *) linitial(opexpr->args)
+			// 	: (Expr *) lsecond(opexpr->args);
+			// Expr *rightarg = rinfo->outer_is_left ?
+			// 	(Expr *) lsecond(opexpr->args)
+			// 	: (Expr *) linitial(opexpr->args);
+
+			// if (IsA(leftarg, Var)
+			// 	// && bms_is_member(((Var *) leftarg)->varno, outerrelids)
+			// 	&& IsA(rightarg, Var))
+			// 	// && bms_is_member(((Var *) rightarg)->varno, innerrelids))
+			// {
+			// 	innerAttNos =
+			// 		lappend_int(innerAttNos, ((Var *) rightarg)->varattno);
+			// }
+		}
+		else
+		{
+			hashOps = lappend_oid(hashOps, InvalidOid);
+		}
+	}
+
 	join_plan = make_nestloop(tlist,
 							  joinclauses,
 							  otherclauses,
@@ -4692,7 +4739,9 @@ create_nestloop_plan(PlannerInfo *root,
 							  outer_plan,
 							  inner_plan,
 							  best_path->jointype,
-							  best_path->inner_unique);
+							  best_path->inner_unique,
+							  hashOps,
+							  innerAttNos);
 
 	copy_generic_path_info(&join_plan->join.plan, &best_path->path);
 
@@ -5240,59 +5289,61 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 }
 
 static Node *
-batch_nestloop_params(PlannerInfo *root, Node *expr)
+batch_nestloop_params(PlannerInfo *root, Node *expr, IndexPath *indexpath)
 {
 	/* No setup needed for tree walk, so away we go */
-	return batch_nestloop_params_mutator(expr, root);
+	ExpressionBatchCtx ctx;
+	ctx.indexpath = indexpath;
+	ctx.plannerinfo = root;
+	return batch_nestloop_params_mutator(expr, &ctx);
 }
 
 static Node *
-batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
+batch_nestloop_params_mutator(Node *node, ExpressionBatchCtx *ctx)
 {
 	if (node == NULL)
 		return NULL;
 
-	if (IsA(node, Param))
+	IndexPath *indexpath = ctx->indexpath;
+	PlannerInfo *root = ctx->plannerinfo;
+	if (IsA(node, OpExpr))
 	{
-		Param *param = (Param *) node;
-
-		if (param->paramkind != PARAM_EXEC || param->location == -1) {
-			return node;
-		}
-
-		return (Node *) batch_nestloop_param(root, param);
-	}
-
-	Node * ret = expression_tree_mutator(node,
-								   		 batch_nestloop_params_mutator,
-								   		 (void *) root);
-	if (IsA(ret, OpExpr))
-	{
-		OpExpr *opexpr = (OpExpr*) ret;
+		OpExpr *opexpr = (OpExpr*) node;
 		
-		// TODO: Check if this is an equality
-		
-		if ((IsA(lsecond(opexpr->args), List)
-			 && IsA(linitial(opexpr->args), Var))
-			|| (IsA(linitial(opexpr->args), List)
-				&& IsA(lsecond(opexpr->args), Var)))
+		int strategy = get_op_opfamily_strategy(
+			opexpr->opno,
+			*indexpath->indexinfo->opfamily);
+		if (strategy == BTEqualStrategyNumber
+			&& ((IsA(lsecond(opexpr->args), Param)
+			 	 && IsA(linitial(opexpr->args), Var))
+				|| (IsA(linitial(opexpr->args), Param)
+					&& IsA(lsecond(opexpr->args), Var))))
 		{
 			Var *var;
-			List *batched_param_list;
+			Param *param;
 			if (IsA(lsecond(opexpr->args), Var))
 			{
 				var = (Var *) lsecond(opexpr->args);
-				batched_param_list = (List *) linitial(opexpr->args);
+				param = (Param *) linitial(opexpr->args);
 			}
 			else
 			{
 				var = (Var *) linitial(opexpr->args);
-				batched_param_list = (List *) lsecond(opexpr->args);
+				param = (Param *) lsecond(opexpr->args);
 			}
 			Assert(yb_nl_batch_size > 1);
-			Assert(batched_param_list->length == yb_nl_batch_size);
-			Assert(IsA(linitial(batched_param_list), Param));
 
+			if (param->paramkind != PARAM_EXEC
+				|| param->location == -1
+				|| root->curOuterParams == NULL) {
+				return node;
+			}
+
+			List *batched_param_list = (List *) batch_nestloop_param(root, param);
+			if (batched_param_list == NULL)
+				return node;
+
+			Assert(batched_param_list->length == yb_nl_batch_size);
 			ScalarArrayOpExpr *saop = makeNode(ScalarArrayOpExpr);
 			saop->opno = opexpr->opno;
 			saop->opfuncid = opexpr->opfuncid;
@@ -5325,6 +5376,10 @@ batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
 			// TODO: think about memory leak here on replaced expr?
 		}
 	}
+
+	Node * ret = expression_tree_mutator(node,
+								   		 batch_nestloop_params_mutator,
+								   		 (void *) ctx);
 	return ret;
 }
 
@@ -5372,7 +5427,7 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path)
 		clause = replace_nestloop_params(root, (Node *) rinfo->clause);
 		if (yb_nl_batch_size > 1)
 		{
-			clause = batch_nestloop_params(root, (Node *) clause);
+			clause = batch_nestloop_params(root, (Node *) clause, index_path);
 		}
 
 		if (IsA(clause, OpExpr))
@@ -6477,7 +6532,9 @@ make_nestloop(List *tlist,
 			  Plan *lefttree,
 			  Plan *righttree,
 			  JoinType jointype,
-			  bool inner_unique)
+			  bool inner_unique,
+			  List *hashOps,
+			  List *innerHashAttNos)
 {
 	NestLoop   *node = makeNode(NestLoop);
 	Plan	   *plan = &node->join.plan;
@@ -6490,6 +6547,8 @@ make_nestloop(List *tlist,
 	node->join.inner_unique = inner_unique;
 	node->join.joinqual = joinclauses;
 	node->nestParams = nestParams;
+	node->hashOps = hashOps;
+	node->innerHashAttNos = innerHashAttNos;
 
 	return node;
 }

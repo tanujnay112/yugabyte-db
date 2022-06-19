@@ -22,17 +22,42 @@
 #include "postgres.h"
 
 #include "executor/execdebug.h"
+#include "executor/executor.h"
 #include "executor/nodeNestloop.h"
+#include "nodes/relation.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
 bool CreateBatch(NestLoopState *node, ExprContext *econtext);
-bool FlushTuple(NestLoopState *node, ExprContext *econtext);
 int GetBatchSize(NestLoop *node);
 bool IsBatched(NestLoop *node);
+
+bool FlushTuple(NestLoopState *node, ExprContext *econtext);
 bool GetNewOuterTuple(NestLoopState *node, ExprContext *econtext);
 void ResetBatch(NestLoopState *node, ExprContext *econtext);
-void RegisterOuterMatch(NestLoopState *node);
+void RegisterOuterMatch(NestLoopState *node, ExprContext *econtext);
+void AddTupleToOuterBatch(NestLoopState *node, TupleTableSlot *slot);
+void FreeBatch(NestLoopState *node);
+
+bool FlushTupleHash(NestLoopState *node, ExprContext *econtext);
+bool GetNewOuterTupleHash(NestLoopState *node, ExprContext *econtext);
+void ResetBatchHash(NestLoopState *node, ExprContext *econtext);
+void RegisterOuterMatchHash(NestLoopState *node, ExprContext *econtext);
+void AddTupleToOuterBatchHash(NestLoopState *node, TupleTableSlot *slot);
+void FreeBatchHash(NestLoopState *node);
+
+
+// #define USE_HASH
+
+// #ifdef USE_HASH
+// #define LOCAL_JOIN_METHOD(x) x##Hash
+// #else
+// #define LOCAL_JOIN_METHOD(x) x
+// #endif
+
+#define LOCAL_JOIN_METHOD_0(fn, node) (*node->fn##Impl)(node)
+#define LOCAL_JOIN_METHOD(fn, node, ...) (*node->fn##Impl)(node, __VA_ARGS__)
+
 
 /* ----------------------------------------------------------------
  *		ExecNestLoop(node)
@@ -88,8 +113,8 @@ ExecNestLoop(PlanState *pstate)
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
 	// outerPlan = outerPlanState(node);
-	innerPlan = innerPlanState(node);
 	econtext = node->js.ps.ps_ExprContext;
+	innerPlan = innerPlanState(node);
 
 	/*
 	 * Reset per-tuple memory context to free any expression evaluation
@@ -105,88 +130,107 @@ ExecNestLoop(PlanState *pstate)
 
 	for (;;)
 	{
-
-		if (node->nl_currentstatus == NL_FLUSHING)
+		bool success = false;
+		Assert(IsBatched(nl) || node->nl_NeedNewInner);
+		switch (node->nl_currentstatus)
 		{
-			bool success = FlushTuple(node, econtext);
-			if (success)
-			{
-				node->nl_NeedNewOuter = false;
-				node->nl_NeedNewInner = false;
-				goto innerscan;
-			}
-			/* tuplestate should be clean */
-			node->nl_currentstatus = NL_INIT;
-		}
-		/*
-		 * If we don't have an outer tuple, get the next one and reset the
-		 * inner scan.
-		 */
-		if (node->nl_NeedNewOuter)
-		{
-			if (node->nl_currentstatus == NL_BATCHING)
-			{
-				Tuplestorestate *outertuples = node->batchedtuplestorestate;
-				if (outertuples)
+			case NL_INIT:
+				node->nl_currentstatus = NL_BATCHING;
+				switch_fallthrough();
+			case NL_NOBATCH:
+				Assert(node->nl_NeedNewOuter || node->nl_NeedNewInner);
+				if (node->nl_NeedNewOuter)
 				{
-					if(!GetNewOuterTuple(node, econtext))
+					success = CreateBatch(node, econtext);
+					if (!success)
+						return NULL;
+					
+					node->nl_NeedNewInner = true;
+					node->nl_MatchedOuter = false;
+
+					/*
+					* now rescan the inner plan
+					*/
+					ENL1_printf("rescanning inner plan");
+					ExecReScan(innerPlan);
+					/*
+					* we have an outerTuple, try to get the next inner tuple.
+					*/
+					ENL1_printf("getting new inner tuple");
+
+				}
+				switch_fallthrough();
+			case NL_BATCHING:
+				/*
+				* we have an outerTuple, try to get the next inner tuple.
+				*/
+				ENL1_printf("getting new inner tuple");
+
+				if (node->nl_NeedNewInner
+					|| node->nl_currentstatus == NL_NOBATCH)
+				{
+					innerTupleSlot = ExecProcNode(innerPlan);
+					econtext->ecxt_innertuple = innerTupleSlot;
+					node->nl_NeedNewInner = false;
+
+					if (node->nl_currentstatus == NL_NOBATCH)
+						break;
+
+					Assert(IsBatched(nl));
+					LOCAL_JOIN_METHOD(ResetBatch, node, econtext);
+
+					if (TupIsNull(innerTupleSlot))
+					{
+						node->nl_currentstatus = NL_FLUSHING;
+						continue;
+					}
+
+					/* Why would you ever want a new inner tuple but no new
+					 * outer tuple */
+					Assert(node->nl_NeedNewOuter);
+				}
+
+				if (node->nl_NeedNewOuter)
+				{
+					Assert(IsBatched(nl));
+					Assert(!TupIsNull(econtext->ecxt_innertuple));
+
+					if(!LOCAL_JOIN_METHOD(GetNewOuterTuple, node, econtext))
 					{
 						node->nl_NeedNewInner = true;
-						ResetBatch(node, econtext);
-						GetNewOuterTuple(node, econtext);
+						continue;
 					}
-					else
-					{
-						node->nl_NeedNewInner = false;
-					}
-					goto innerscan;
+					break;
 				}
-			}
-			else
-			{
-				Assert(node->nl_currentstatus == NL_INIT);
-				node->nl_currentstatus = NL_BATCHING;
-			}
-
-			/* create batch */
-			Assert(node->nl_currentstatus == NL_BATCHING || !IsBatched(nl));
-			bool success = CreateBatch(node, econtext);
-			if (!success)
-				return NULL;
-			/*
-			* now rescan the inner plan
-			*/
-			ENL1_printf("rescanning inner plan");
-			ExecReScan(innerPlan);
+				break;
+			case NL_FLUSHING:
+				if (nl->join.jointype == JOIN_INNER
+					|| nl->join.jointype == JOIN_SEMI)
+				{
+					node->nl_currentstatus = NL_INIT;
+					continue;
+				}
+				success = LOCAL_JOIN_METHOD(FlushTuple, node, econtext);
+				if (success)
+				{
+					node->nl_MatchedOuter = false;
+					break;
+				}
+				/* tuplestate should be clean */
+				node->nl_currentstatus = NL_INIT;
+				continue;
+			default:
+				Assert(false);
 		}
 
-	innerscan:
-		/*
-		 * we have an outerTuple, try to get the next inner tuple.
-		 */
-		ENL1_printf("getting new inner tuple");
-
-		if (node->nl_NeedNewInner)
-		{
-			innerTupleSlot = ExecProcNode(innerPlan);
-			econtext->ecxt_innertuple = innerTupleSlot;
-		}
 		innerTupleSlot = econtext->ecxt_innertuple;
-		node->nl_NeedNewInner = false;
 
-		if (TupIsNull(innerTupleSlot))
+		if (TupIsNull(innerTupleSlot) || node->nl_currentstatus == NL_FLUSHING)
 		{
 			ENL1_printf("no inner tuple, need new outer tuple");
 
 			node->nl_NeedNewOuter = true;
 			node->nl_NeedNewInner = true;
-			
-			if (IsBatched(nl) && node->nl_currentstatus != NL_FLUSHING)
-			{
-				node->nl_currentstatus = NL_FLUSHING;
-				ResetBatch(node, econtext);
-				continue;
-			}
 
 			if (!node->nl_MatchedOuter &&
 				(node->js.jointype == JOIN_LEFT ||
@@ -223,6 +267,9 @@ ExecNestLoop(PlanState *pstate)
 			continue;
 		}
 
+		node->nl_NeedNewOuter = IsBatched(nl);
+		node->nl_NeedNewInner = !IsBatched(nl);
+
 		/*
 		 * at this point we have a new pair of inner and outer tuples so we
 		 * test the inner and outer tuples to see if they satisfy the node's
@@ -235,12 +282,17 @@ ExecNestLoop(PlanState *pstate)
 
 		if (ExecQual(joinqual, econtext))
 		{
-			RegisterOuterMatch(node);
+			if (IsBatched(nl))
+				LOCAL_JOIN_METHOD(RegisterOuterMatch, node, econtext);
 			node->nl_MatchedOuter = true;
-
 			/* In an antijoin, we never return a matched tuple */
+
 			if (node->js.jointype == JOIN_ANTI)
 			{
+				/*
+				 * This outer tuple has been matched so never think about 
+				 * this outer tuple again.
+				 */
 				node->nl_NeedNewOuter = true;
 				continue;		/* return to top of loop */
 			}
@@ -251,10 +303,7 @@ ExecNestLoop(PlanState *pstate)
 			 * outer tuple.
 			 */
 			if (node->js.single_match)
-			{
 				node->nl_NeedNewOuter = true;
-				node->nl_NeedNewInner = true;
-			}
 
 			if (otherqual == NULL || ExecQual(otherqual, econtext))
 			{
@@ -272,10 +321,6 @@ ExecNestLoop(PlanState *pstate)
 		else
 			InstrCountFiltered1(node, 1);
 
-		if (IsBatched(nl))
-		{
-			node->nl_NeedNewOuter = true;
-		}
 		/*
 		 * Tuple fails qual, so free per-tuple memory and try again.
 		 */
@@ -285,6 +330,193 @@ ExecNestLoop(PlanState *pstate)
 	}
 }
 
+void InitHash(NestLoopState *node)
+{
+	EState *estate = node->js.ps.state;
+	NestLoop *plan = (NestLoop*) node->js.ps.plan;
+	Assert(IsBatched(plan));
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	TupleDesc outer_tdesc = outerPlanState(node)->ps_ResultTupleDesc;
+	// TODO figure out how to get all the join operators
+	ListCell *lc;
+	Oid *eqops = palloc(plan->hashOps->length * (sizeof(Oid)));
+	int i = 0;
+	
+	node->numLookupAttrs = plan->hashOps->length;
+	node->innerAttrs = palloc(node->numLookupAttrs * sizeof(AttrNumber));
+
+	foreach(lc, plan->hashOps)
+	{
+		Oid eqop = lfirst_oid(lc);
+		if (!OidIsValid(eqop))
+			continue;
+		eqops[i] = eqop;
+		node->innerAttrs[i] = list_nth_int(plan->innerHashAttNos, i);
+		i++;
+	}
+	Oid *eqFuncOids;
+	execTuplesHashPrepare(i, eqops, &eqFuncOids, &node->hashFunctions);
+
+	node->hashslot =
+		ExecAllocTableSlot(&estate->es_tupleTable, outer_tdesc);
+	int numattrs = plan->nestParams->length;
+	AttrNumber *keyattrs = palloc(numattrs * (sizeof(AttrNumber)));
+	i = 0;
+	// TODO THIS IS WRONG
+	foreach(lc, plan->nestParams)
+	{
+		NestLoopParam *nlp = (NestLoopParam *) lfirst(lc);
+		keyattrs[i++] = nlp->paramval->varattno;
+	}
+
+	// TODO make varname casing consistent
+	// Size additional_size = sizeof(HashedTupleData);
+
+	MemoryContext tablecxt =
+		CreateThreadLocalCurrentMemoryContext(GetCurrentMemoryContext(), "NL_HASHTABLE");
+
+	node->hashtable = BuildTupleHashTableExt(&node->js.ps, outer_tdesc, numattrs, keyattrs, eqFuncOids, node->hashFunctions, GetBatchSize(plan), 0, econtext->ecxt_per_query_memory, tablecxt, econtext->ecxt_per_tuple_memory, false);
+
+	node->hashiterinit = false;
+}
+
+bool FlushTupleHash(NestLoopState *node, ExprContext *econtext)
+{
+	if (!node->hashiterinit)
+	{
+		InitTupleHashIterator(node->hashtable, &node->hashiter);
+		node->hashiterinit = true;
+	}
+	
+	
+	TupleHashEntry entry = node->current_hash_entry;
+	if (entry == NULL)
+		entry = ScanTupleHashTable(node->hashtable, &node->hashiter);
+	while (entry != NULL)
+	{
+		NLBucketInfo *binfo = entry->additional;
+		if (!(binfo->matched))
+		{
+			node->current_hash_entry = entry;
+			if (binfo->current != NULL)
+			{
+				ExecStoreMinimalTuple(lfirst(binfo->current),
+									  econtext->ecxt_outertuple,
+									  false);
+				binfo->current = binfo->current->next;
+				return true;
+			}
+		}
+		entry = ScanTupleHashTable(node->hashtable, &node->hashiter);
+	}
+	TermTupleHashIterator(&node->hashiter);
+	node->hashiterinit = false;
+	return false;
+}
+
+bool GetNewOuterTupleHash(NestLoopState *node, ExprContext *econtext)
+{
+	TupleTableSlot *inner = econtext->ecxt_innertuple;
+	TupleHashTable ht = node->hashtable;
+	ExprState *eq = node->js.joinqual;
+
+	TupleHashEntry data;
+	data = FindTupleHashEntry(ht, inner, eq, node->hashFunctions, node->numLookupAttrs, node->innerAttrs);
+	node->current_hash_entry = NULL;
+	Assert(data != NULL);
+
+	NLBucketInfo *binfo = (NLBucketInfo*) data->additional;
+	if (binfo->current == NULL)
+	{
+		binfo->current = list_head(binfo->tuples);
+		return false;
+	}
+
+	MinimalTuple mintp = (MinimalTuple ) lfirst(binfo->current);
+	ExecStoreMinimalTuple(mintp, econtext->ecxt_outertuple, false);
+	binfo->current = binfo->current->next;
+
+	Assert(data != NULL);
+	node->nl_MatchedOuter = false;
+	return true;
+}
+
+void ResetBatchHash(NestLoopState *node, ExprContext *econtext)
+{
+	if (node->hashiterinit)
+	{
+		node->hashiterinit = false;
+		TermTupleHashIterator(&node->hashiterinit);
+	}
+}
+
+void RegisterOuterMatchHash(NestLoopState *node, ExprContext *econtext)
+{
+	TupleHashTable ht = node->hashtable;
+	TupleHashEntry data = LookupTupleHashEntry(ht, econtext->ecxt_outertuple, NULL);
+	Assert(data != NULL);
+	((NLBucketInfo*)data->additional)->matched = true;
+}
+
+void AddTupleToOuterBatchHash(NestLoopState *node, TupleTableSlot *slot)
+{
+	TupleHashTable ht = node->hashtable;
+	bool isnew = false;
+
+	TupleHashEntry orig_data = LookupTupleHashEntry(ht, slot, &isnew);
+	Assert(orig_data != NULL);
+	MemoryContext cxt = MemoryContextSwitchTo(ht->tablecxt);
+	if (isnew)
+	{
+		orig_data->additional = palloc0(sizeof(NLBucketInfo));
+	}
+	NLBucketInfo *binfo = (NLBucketInfo *) orig_data->additional;
+	List *tl = binfo->tuples;
+	if (!isnew)
+	{
+		ExprState *tmp = ht->tab_eq_func;
+		ht->tab_eq_func = NULL;
+		orig_data = LookupTupleHashEntry(ht, slot, &isnew);
+		ht->tab_eq_func = tmp;
+	}
+
+	binfo->tuples = list_append_unique_ptr(tl, orig_data->firstTuple);
+	binfo->current = list_head(binfo->tuples);
+	MemoryContextSwitchTo(cxt);
+}
+
+void EndHash(NestLoopState *node)
+{
+	(void)node;
+	MemoryContextDelete(node->hashtable->tablecxt);
+	return;
+}
+
+
+void AddTupleToOuterBatch(NestLoopState *node, TupleTableSlot *slot)
+{
+	tuplestore_puttupleslot(node->batchedtuplestorestate,
+							slot);
+	node->nl_batchedmatchedinfo =
+		lappend_int(node->nl_batchedmatchedinfo, 0);
+}
+
+void FreeBatchHash(NestLoopState *node)
+{
+	if (node->hashtable == NULL)
+	{
+		return;
+	}
+	node->hashiterinit = false;
+	ResetTupleHashTable(node->hashtable);
+	MemoryContextReset(node->hashtable->tablecxt);
+}
+
+bool UseHash(NestLoop *node, NestLoopState *nl)
+{
+	return node->hashOps != NIL && node->hashOps->length > 0;
+}
+
 bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 {
 	bool outer_done = false;
@@ -292,6 +524,7 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 	TupleTableSlot *outerTupleSlot;
 	PlanState  *outerPlan = outerPlanState(node);
 	PlanState  *innerPlan = innerPlanState(node);
+	LOCAL_JOIN_METHOD_0(FreeBatch, node);
 
 	for (int batchno = 0; batchno < GetBatchSize(nl); batchno++)
 	{
@@ -314,7 +547,6 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 			else
 			{
 				outer_done = true;
-				// TODO Just fill in the rest of the params with NULL
 			}
 		}
 		else
@@ -323,22 +555,9 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 			econtext->ecxt_outertuple = outerTupleSlot;
 			if (IsBatched(nl))
 			{
-				tuplestore_puttupleslot(node->batchedtuplestorestate,
-										outerTupleSlot);
-				node->nl_batchedmatchedinfo =
-					lappend_int(node->nl_batchedmatchedinfo, 0);
+				LOCAL_JOIN_METHOD(AddTupleToOuterBatch, node, outerTupleSlot);
 			}
 		}
-
-		// if (outer_done)
-		// {
-		// 	tuplestore_gettupleslot(node->batchedtuplestorestate,
-		// 							true, false, outerTupleSlot);
-		// 	econtext->ecxt_outertuple = outerTupleSlot;
-		// }
-
-		node->nl_NeedNewOuter = false;
-		node->nl_MatchedOuter = false;
 
 		/*
 		* fetch the values of any outer Vars that must be passed to the
@@ -377,16 +596,13 @@ bool CreateBatch(NestLoopState *node, ExprContext *econtext)
 			}
 			/* Flag parameter value as changed */
 			innerPlan->chgParam = bms_add_member(innerPlan->chgParam,
-													paramno);
+												 paramno);
 		}
 	}
 
 	if (IsBatched(nl))
 	{
-		tuplestore_rescan(node->batchedtuplestorestate);
-		tuplestore_gettupleslot(node->batchedtuplestorestate, true, false, 
-								econtext->ecxt_outertuple);
-		node->nl_batchtupno = 1;
+		LOCAL_JOIN_METHOD(ResetBatch, node, econtext);
 	}
 
 	return true;
@@ -402,7 +618,7 @@ bool FlushTuple(NestLoopState *node, ExprContext *econtext)
 	{
 		ListCell *lc = list_nth_cell(node->nl_batchedmatchedinfo, 
 								 	 node->nl_batchtupno);
-		if (lc->data.int_value == 1)
+		if (lc->data.int_value == 0)
 		{
 			GetNewOuterTuple(node, econtext);
 			return true;
@@ -410,26 +626,30 @@ bool FlushTuple(NestLoopState *node, ExprContext *econtext)
 		tuplestore_skiptuples(node->batchedtuplestorestate, 1, true);
 		node->nl_batchtupno++;
 	}
-	tuplestore_clear(node->batchedtuplestorestate);
-	list_free(node->nl_batchedmatchedinfo);
-	node->nl_batchedmatchedinfo = NIL;
 	return false;
 }
 
-void RegisterOuterMatch(NestLoopState *node)
+void RegisterOuterMatch(NestLoopState *node, ExprContext *econtext)
 {
 	if (node->batchedtuplestorestate == NULL)
 	{
 		return;
 	}
+	(void) econtext;
 	ListCell *lc = list_nth_cell(node->nl_batchedmatchedinfo, 
 								 node->nl_batchtupno - 1);
 	lc->data.int_value = 1;
 	return;
 }
 
+
 int GetBatchSize(NestLoop *node)
 {
+	if (node->nestParams == NULL)
+	{
+		return 1;
+	}
+
 	NestLoopParam *nlp = (NestLoopParam *) lfirst(list_head(node->nestParams));
 	return nlp->batchedparams ? nlp->batchedparams->length : 1;
 }
@@ -450,6 +670,7 @@ bool GetNewOuterTuple(NestLoopState *node, ExprContext *econtext)
 								   econtext->ecxt_outertuple))
 	{
 		node->nl_batchtupno++;
+		node->nl_MatchedOuter = false;
 		return true;
 	}
 	return false;
@@ -463,9 +684,20 @@ void ResetBatch(NestLoopState *node, ExprContext *econtext)
 		return;
 	}
 	tuplestore_rescan(outertuples);
-	// tuplestore_gettupleslot(outertuples, true, false,
-	// 						econtext->ecxt_outertuple);
 	node->nl_batchtupno = 0;
+}
+
+void FreeBatch(NestLoopState *node)
+{
+	Tuplestorestate *outertuples = node->batchedtuplestorestate;
+	if (!outertuples)
+	{
+		return;
+	}
+
+	tuplestore_clear(node->batchedtuplestorestate);
+	list_free(node->nl_batchedmatchedinfo);
+	node->nl_batchedmatchedinfo = NIL;
 }
 
 /* ----------------------------------------------------------------
@@ -491,15 +723,6 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->js.ps.state = estate;
 	nlstate->js.ps.ExecProcNode = ExecNestLoop;
 	nlstate->batchedtuplestorestate = NULL;
-
-	if (IsBatched(node))
-	{
-		nlstate->batchedtuplestorestate =
-			tuplestore_begin_heap(true, false, work_mem);
-		nlstate->nl_currentstatus = NL_INIT;
-		nlstate->nl_batchedmatchedinfo = NIL;
-		nlstate->nl_batchtupno = 0;
-	}
 
 	/*
 	 * Miscellaneous initialization
@@ -572,6 +795,46 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	NL1_printf("ExecInitNestLoop: %s\n",
 			   "node initialized");
 
+	if (IsBatched(node))
+	{
+		nlstate->nl_currentstatus = NL_INIT;
+		nlstate->nl_batchedmatchedinfo = NIL;
+		nlstate->nl_batchtupno = 0;
+		
+		if (UseHash(node, nlstate))
+		{
+			InitHash(nlstate);
+
+			nlstate->FlushTupleImpl = &FlushTupleHash;
+			nlstate->GetNewOuterTupleImpl = &GetNewOuterTupleHash;
+			nlstate->ResetBatchImpl = &ResetBatchHash;
+			nlstate->RegisterOuterMatchImpl = &RegisterOuterMatchHash;
+			nlstate->AddTupleToOuterBatchImpl = &AddTupleToOuterBatchHash;
+			nlstate->FreeBatchImpl = &FreeBatchHash;
+		}
+		else
+		{
+			nlstate->batchedtuplestorestate =
+				tuplestore_begin_heap(true, false, work_mem);
+			nlstate->FlushTupleImpl = &FlushTuple;
+			nlstate->GetNewOuterTupleImpl = &GetNewOuterTuple;
+			nlstate->ResetBatchImpl = &ResetBatch;
+			nlstate->RegisterOuterMatchImpl = &RegisterOuterMatch;
+			nlstate->AddTupleToOuterBatchImpl = &AddTupleToOuterBatch;
+			nlstate->FreeBatchImpl = &FreeBatch;
+		}
+	}
+	else
+	{
+		nlstate->nl_currentstatus = NL_NOBATCH;
+		nlstate->FlushTupleImpl = &FlushTuple;
+		nlstate->GetNewOuterTupleImpl = &GetNewOuterTuple;
+		nlstate->ResetBatchImpl = &ResetBatch;
+		nlstate->RegisterOuterMatchImpl = &RegisterOuterMatch;
+		nlstate->AddTupleToOuterBatchImpl = &AddTupleToOuterBatch;
+		nlstate->FreeBatchImpl = &FreeBatch;
+	}
+
 	return nlstate;
 }
 
@@ -632,11 +895,8 @@ ExecReScanNestLoop(NestLoopState *node)
 	
 	if (IsBatched((NestLoop*) node->js.ps.plan))
 	{
-		node->batchedtuplestorestate =
-			tuplestore_begin_heap(true, false, work_mem);
+		LOCAL_JOIN_METHOD_0(FreeBatch, node);
 		node->nl_currentstatus = NL_INIT;
-		node->nl_batchedmatchedinfo = NIL;
-		node->nl_batchtupno = 0;
 	}
 
 	/*

@@ -360,6 +360,7 @@ List *
 batch_nestloop_param(PlannerInfo *root, Param *param)
 {
 	Assert(yb_nl_batch_size > 1);
+	Assert(root->curOuterParams != NULL);
 	List *paramnolist = NIL;
 	NestLoopParam *nlp;
 	ListCell   *lc;
@@ -397,7 +398,11 @@ batch_nestloop_param(PlannerInfo *root, Param *param)
 		}
 	}
 
-	Assert(found);
+	// Assert(found);
+	if (!found)
+	{
+		return NULL;
+	}
 	Var *var = nlp->paramval;
 	paramnolist = lappend_int(paramnolist, nlp->paramno);
 	paramlist = lappend(paramlist, param);

@@ -80,6 +80,7 @@
 #define SH_START_ITERATE SH_MAKE_NAME(start_iterate)
 #define SH_START_ITERATE_AT SH_MAKE_NAME(start_iterate_at)
 #define SH_ITERATE SH_MAKE_NAME(iterate)
+#define SH_GET_BUCKET SH_MAKE_NAME(get_bucket)
 #define SH_ALLOCATE SH_MAKE_NAME(allocate)
 #define SH_FREE SH_MAKE_NAME(free)
 #define SH_STAT SH_MAKE_NAME(stat)
@@ -149,6 +150,7 @@ SH_SCOPE bool SH_DELETE(SH_TYPE * tb, SH_KEY_TYPE key);
 SH_SCOPE void SH_START_ITERATE(SH_TYPE * tb, SH_ITERATOR * iter);
 SH_SCOPE void SH_START_ITERATE_AT(SH_TYPE * tb, SH_ITERATOR * iter, uint32 at);
 SH_SCOPE	SH_ELEMENT_TYPE *SH_ITERATE(SH_TYPE * tb, SH_ITERATOR * iter);
+SH_SCOPE int SH_GET_BUCKET(SH_TYPE * tb, SH_ELEMENT_TYPE * key);
 SH_SCOPE void SH_STAT(SH_TYPE * tb);
 
 #endif							/* SH_DECLARE */
@@ -809,6 +811,12 @@ SH_START_ITERATE_AT(SH_TYPE * tb, SH_ITERATOR * iter, uint32 at)
 	iter->done = false;
 }
 
+SH_SCOPE int
+SH_GET_BUCKET(SH_TYPE * tb, SH_ELEMENT_TYPE *key)
+{
+	return key - tb->data;
+}
+
 /*
  * Iterate over all entries in the hash-table. Return the next occupied entry,
  * or NULL if done.
@@ -960,6 +968,7 @@ SH_STAT(SH_TYPE * tb)
 #undef SH_START_ITERATE
 #undef SH_START_ITERATE_AT
 #undef SH_ITERATE
+#undef SH_GET_BUCKET
 #undef SH_ALLOCATE
 #undef SH_FREE
 #undef SH_STAT
