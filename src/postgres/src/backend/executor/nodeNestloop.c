@@ -136,6 +136,9 @@ ExecNestLoop(PlanState *pstate)
 		{
 			case NL_INIT:
 				node->nl_currentstatus = NL_BATCHING;
+				node->nl_NeedNewInner = true;
+				node->nl_NeedNewOuter = true;
+				node->nl_MatchedOuter = false;
 				switch_fallthrough();
 			case NL_NOBATCH:
 				Assert(node->nl_NeedNewOuter || node->nl_NeedNewInner);
@@ -165,6 +168,9 @@ ExecNestLoop(PlanState *pstate)
 				* we have an outerTuple, try to get the next inner tuple.
 				*/
 				ENL1_printf("getting new inner tuple");
+				Assert(node->nl_currentstatus == NL_NOBATCH
+					   || node->nl_NeedNewInner
+					   || !TupIsNull(econtext->ecxt_innertuple));
 
 				if (node->nl_NeedNewInner
 					|| node->nl_currentstatus == NL_NOBATCH)
@@ -378,6 +384,7 @@ void InitHash(NestLoopState *node)
 	node->hashtable = BuildTupleHashTableExt(&node->js.ps, outer_tdesc, numattrs, keyattrs, eqFuncOids, node->hashFunctions, GetBatchSize(plan), 0, econtext->ecxt_per_query_memory, tablecxt, econtext->ecxt_per_tuple_memory, false);
 
 	node->hashiterinit = false;
+	node->current_hash_entry = NULL;
 }
 
 bool FlushTupleHash(NestLoopState *node, ExprContext *econtext)
@@ -386,6 +393,7 @@ bool FlushTupleHash(NestLoopState *node, ExprContext *econtext)
 	{
 		InitTupleHashIterator(node->hashtable, &node->hashiter);
 		node->hashiterinit = true;
+		node->current_hash_entry = NULL;
 	}
 	
 	
@@ -397,13 +405,13 @@ bool FlushTupleHash(NestLoopState *node, ExprContext *econtext)
 		NLBucketInfo *binfo = entry->additional;
 		if (!(binfo->matched))
 		{
-			node->current_hash_entry = entry;
 			if (binfo->current != NULL)
 			{
 				ExecStoreMinimalTuple(lfirst(binfo->current),
 									  econtext->ecxt_outertuple,
 									  false);
 				binfo->current = binfo->current->next;
+				node->current_hash_entry = entry;
 				return true;
 			}
 		}
@@ -411,6 +419,7 @@ bool FlushTupleHash(NestLoopState *node, ExprContext *econtext)
 	}
 	TermTupleHashIterator(&node->hashiter);
 	node->hashiterinit = false;
+	node->current_hash_entry = NULL;
 	return false;
 }
 
@@ -422,7 +431,6 @@ bool GetNewOuterTupleHash(NestLoopState *node, ExprContext *econtext)
 
 	TupleHashEntry data;
 	data = FindTupleHashEntry(ht, inner, eq, node->hashFunctions, node->numLookupAttrs, node->innerAttrs);
-	node->current_hash_entry = NULL;
 	Assert(data != NULL);
 
 	NLBucketInfo *binfo = (NLBucketInfo*) data->additional;
@@ -463,24 +471,25 @@ void AddTupleToOuterBatchHash(NestLoopState *node, TupleTableSlot *slot)
 	TupleHashTable ht = node->hashtable;
 	bool isnew = false;
 
+	Assert(!TupIsNull(slot));
 	TupleHashEntry orig_data = LookupTupleHashEntry(ht, slot, &isnew);
 	Assert(orig_data != NULL);
+	Assert(orig_data->firstTuple != NULL);
 	MemoryContext cxt = MemoryContextSwitchTo(ht->tablecxt);
+	MinimalTuple tuple;
 	if (isnew)
 	{
 		orig_data->additional = palloc0(sizeof(NLBucketInfo));
+		tuple = orig_data->firstTuple;
 	}
 	NLBucketInfo *binfo = (NLBucketInfo *) orig_data->additional;
 	List *tl = binfo->tuples;
 	if (!isnew)
 	{
-		ExprState *tmp = ht->tab_eq_func;
-		ht->tab_eq_func = NULL;
-		orig_data = LookupTupleHashEntry(ht, slot, &isnew);
-		ht->tab_eq_func = tmp;
+		tuple = ExecCopySlotMinimalTuple(slot);
 	}
 
-	binfo->tuples = list_append_unique_ptr(tl, orig_data->firstTuple);
+	binfo->tuples = list_append_unique_ptr(tl, tuple);
 	binfo->current = list_head(binfo->tuples);
 	MemoryContextSwitchTo(cxt);
 }
@@ -510,6 +519,7 @@ void FreeBatchHash(NestLoopState *node)
 	node->hashiterinit = false;
 	ResetTupleHashTable(node->hashtable);
 	MemoryContextReset(node->hashtable->tablecxt);
+	node->current_hash_entry = NULL;
 }
 
 bool UseHash(NestLoop *node, NestLoopState *nl)

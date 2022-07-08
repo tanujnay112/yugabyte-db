@@ -1695,7 +1695,6 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 				Assert(IsA(clause, OpExpr));
 				OpExpr *opexpr = (OpExpr *) clause;
 				Assert(opexpr->args->length == 2);
-				Assert(IsA(linitial(opexpr->args), Var));
 				Assert(IsA(lsecond(opexpr->args), Var));
 				Var *leftArg = (Var *) linitial(opexpr->args);
 				Var *rightarg = (Var *) lsecond(opexpr->args);

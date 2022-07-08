@@ -1821,10 +1821,10 @@ typedef struct NestLoopState
 	TupleTableSlot *hashslot;
 	bool hashiterinit;
 	TupleHashIterator hashiter;
+	TupleHashEntry current_hash_entry;
 	FmgrInfo *hashFunctions;
 	int numLookupAttrs;
 	AttrNumber *innerAttrs;
-	TupleHashEntry current_hash_entry;
 
 	FlushTupleFn_t FlushTupleImpl;
 	GetNewOuterTupleFn_t GetNewOuterTupleImpl;
