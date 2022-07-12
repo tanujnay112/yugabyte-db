@@ -498,6 +498,7 @@ void AddTupleToOuterBatchHash(NestLoopState *node, TupleTableSlot *slot)
 
 	binfo->tuples = list_append_unique_ptr(tl, tuple);
 	binfo->current = list_head(binfo->tuples);
+	ExecStoreMinimalTuple(tuple, slot, false);
 	MemoryContextSwitchTo(cxt);
 }
 
@@ -515,6 +516,7 @@ void AddTupleToOuterBatch(NestLoopState *node, TupleTableSlot *slot)
 							slot);
 	node->nl_batchedmatchedinfo =
 		lappend_int(node->nl_batchedmatchedinfo, 0);
+	tuplestore_gettupleslot(node->batchedtuplestorestate, true, false, slot);
 }
 
 void FreeBatchHash(NestLoopState *node)
