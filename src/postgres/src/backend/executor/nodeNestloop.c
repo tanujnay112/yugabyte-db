@@ -146,7 +146,14 @@ ExecNestLoop(PlanState *pstate)
 				{
 					success = CreateBatch(node, econtext);
 					if (!success)
+					{
+						if (IsBatched(node))
+						{
+							LOCAL_JOIN_METHOD_0(FreeBatch, node);
+							node->nl_currentstatus = NL_INIT;
+						}
 						return NULL;
+					}
 					
 					node->nl_NeedNewInner = true;
 					node->nl_MatchedOuter = false;
