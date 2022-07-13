@@ -73,6 +73,7 @@ ExecNestLoop(PlanState *pstate)
 	ExprState  *joinqual;
 	ExprState  *otherqual;
 	ExprContext *econtext;
+	ListCell   *lc;
 
 	CHECK_FOR_INTERRUPTS();
 
@@ -411,7 +412,6 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->js.ps.plan = (Plan *) node;
 	nlstate->js.ps.state = estate;
 	nlstate->js.ps.ExecProcNode = ExecNestLoop;
-	nlstate->batchedtuplestorestate = NULL;
 
 	if (IsBatched(node))
 	{
@@ -484,7 +484,6 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	 * finally, wipe the current outer tuple clean.
 	 */
 	nlstate->nl_NeedNewOuter = true;
-	nlstate->nl_NeedNewInner = true;
 	nlstate->nl_MatchedOuter = false;
 
 	NL1_printf("ExecInitNestLoop: %s\n",
@@ -553,6 +552,5 @@ ExecReScanNestLoop(NestLoopState *node)
 	 */
 
 	node->nl_NeedNewOuter = true;
-	node->nl_NeedNewInner = true;
 	node->nl_MatchedOuter = false;
 }

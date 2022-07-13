@@ -2837,6 +2837,7 @@ check_index_predicates(PlannerInfo *root, RelOptInfo *rel)
 		if (!join_clause_is_movable_to(rinfo, rel))
 			continue;
 
+
 		clauselist = lappend(clauselist, rinfo);
 	}
 

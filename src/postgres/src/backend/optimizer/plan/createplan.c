@@ -3572,7 +3572,6 @@ create_indexscan_plan(PlannerInfo *root,
 	 */
 	if (best_path->path.param_info)
 	{
-		// TODO make sure we're not here for hash joins
 		stripped_indexquals = (List *)
 			replace_nestloop_params(root, (Node *) stripped_indexquals);
 		local_qual = (List *)
@@ -5309,6 +5308,13 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 								   (void *) root);
 }
 
+/*
+ * Finds expressions that can be converted to batched form for a batched NL join
+ * and converts them. An example of such transformation can come in the form
+ * (inner_var = outer_param) -> (inner_var IN (outer_param_1, outer_param_2,
+ *  ..., outer_param_n)) where n = yb_bnl_batch_size. Currently we only support
+ * batching on expressions of the form (inner_var = outer_var). 
+ */
 static Node *
 batch_nestloop_params(PlannerInfo *root, Node *expr)
 {
@@ -5354,7 +5360,7 @@ batch_nestloop_params_mutator(Node *node, PlannerInfo *root)
 			saop->opfuncid = opexpr->opfuncid;
 			saop->useOr = true;
 
-			Param *firstparam = (Param*) linitial(batched_param_list);
+		Assert(batched_param_list->length == yb_bnl_batch_size);
 
 			ArrayExpr *arrexpr = makeNode(ArrayExpr);
 			Oid scalar_type = firstparam->paramtype;

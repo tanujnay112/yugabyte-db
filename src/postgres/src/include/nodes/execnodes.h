@@ -1827,7 +1827,6 @@ typedef struct NestLoopState
 {
 	JoinState	js;				/* its first field is NodeTag */
 	bool		nl_NeedNewOuter;
-	bool		nl_NeedNewInner;
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
 	Tuplestorestate *batchedtuplestorestate;
