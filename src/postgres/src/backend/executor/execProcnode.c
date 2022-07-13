@@ -97,6 +97,7 @@
 #include "executor/nodeMergejoin.h"
 #include "executor/nodeModifyTable.h"
 #include "executor/nodeNamedtuplestorescan.h"
+#include "executor/nodeBatchedNestloop.h"
 #include "executor/nodeNestloop.h"
 #include "executor/nodeProjectSet.h"
 #include "executor/nodeRecursiveunion.h"
@@ -296,6 +297,12 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_NestLoop:
 			result = (PlanState *) ExecInitNestLoop((NestLoop *) node,
 													estate, eflags);
+			break;
+
+		case T_BatchedNestLoop:
+			result = (PlanState *) ExecInitBatchedNestLoop(
+				(BatchedNestLoop *) node,
+				estate, eflags);
 			break;
 
 		case T_MergeJoin:
@@ -684,6 +691,10 @@ ExecEndNode(PlanState *node)
 			 */
 		case T_NestLoopState:
 			ExecEndNestLoop((NestLoopState *) node);
+			break;
+
+		case T_BatchedNestLoopState:
+			ExecEndBatchedNestLoop((BatchedNestLoopState *) node);
 			break;
 
 		case T_MergeJoinState:

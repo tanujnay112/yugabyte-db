@@ -2348,6 +2348,7 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 			break;
 
 		case T_NestLoop:
+		case T_BatchedNestLoop:
 			{
 				ListCell   *l;
 

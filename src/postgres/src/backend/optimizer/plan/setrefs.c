@@ -652,6 +652,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			break;
 
 		case T_NestLoop:
+		case T_BatchedNestLoop:
 		case T_MergeJoin:
 		case T_HashJoin:
 			set_join_references(root, (Join *) plan, rtoffset);
@@ -1662,9 +1663,11 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 								   rtoffset);
 
 	/* Now do join-type-specific stuff */
-	if (IsA(join, NestLoop))
+	if (IsA(join, NestLoop) || IsA(join, BatchedNestLoop))
 	{
-		NestLoop   *nl = (NestLoop *) join;
+		NestLoop   *nl = IsA(join, NestLoop) 
+						 ? (NestLoop *) join
+						 : &((BatchedNestLoop *) join)->nl;
 		ListCell   *lc;
 
 		foreach(lc, nl->nestParams)
@@ -1681,37 +1684,46 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 				  nlp->paramval->varno == OUTER_VAR))
 				elog(ERROR, "NestLoopParam was not reduced to a simple Var");
 		}
-			List *innerAttNos = NIL;
+		List *innerAttNos = NIL;
 
 		ListCell *l;
-		ListCell *ll = list_head(nl->hashOps);
-		foreach(l, join->joinqual)
+		if (IsA(join, BatchedNestLoop))
 		{
-			Expr *clause = (Expr *) lfirst(l);
-			Oid hashOp = lfirst_oid(ll);
-			if (OidIsValid(hashOp))
+			BatchedNestLoop *batchednl = (BatchedNestLoop *) join;
+			ListCell *ll = list_head(batchednl->hashOps);
+
+			if (ll != NULL)
 			{
-				// if nlhash can process this
-				Assert(IsA(clause, OpExpr));
-				OpExpr *opexpr = (OpExpr *) clause;
-				Assert(opexpr->args->length == 2);
-				Assert(IsA(lsecond(opexpr->args), Var));
-				Var *leftArg = (Var *) linitial(opexpr->args);
-				Var *rightarg = (Var *) lsecond(opexpr->args);
+				/* Fill in batchednl->innerHashAttNos if applicable */
+				foreach(l, join->joinqual)
+				{
+					Expr *clause = (Expr *) lfirst(l);
+					Oid hashOp = lfirst_oid(ll);
+					if (OidIsValid(hashOp))
+					{
+						Assert(IsA(clause, OpExpr));
+						OpExpr *opexpr = (OpExpr *) clause;
+						Assert(list_length(opexpr->args) == 2);
+						Assert(IsA(lsecond(opexpr->args), Var));
+						Var *leftArg = (Var *) linitial(opexpr->args);
+						Var *rightarg = (Var *) lsecond(opexpr->args);
 
-				Var *innerArg = leftArg->varno == INNER_VAR
-								? leftArg
-								: rightarg;
-				
-				Assert(innerArg->varno = INNER_VAR);
+						Var *innerArg = leftArg->varno == INNER_VAR
+										? leftArg
+										: rightarg;
+						
+						Assert(innerArg->varno = INNER_VAR);
 
-				innerAttNos =
-					lappend_int(innerAttNos, ((Var *) innerArg)->varattno);
+						innerAttNos =
+							lappend_int(innerAttNos,
+										((Var *) innerArg)->varattno);
+					}
+					ll = lnext(ll);
+				}
 			}
-			ll = lnext(ll);
+			batchednl->innerHashAttNos = innerAttNos;
 		}
 
-		nl->innerHashAttNos = innerAttNos;
 	}
 	else if (IsA(join, MergeJoin))
 	{

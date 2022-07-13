@@ -1061,6 +1061,7 @@ typedef struct ParamPathInfo
 	Relids		ppi_req_outer;	/* rels supplying parameters used by path */
 	double		ppi_rows;		/* estimated number of result tuples */
 	List	   *ppi_clauses;	/* join clauses available from outer rels */
+	Relids		yb_ppi_req_outer_batched; /* outer rels that can be batched */
 } ParamPathInfo;
 
 

@@ -81,11 +81,12 @@
 #define CP_LABEL_TLIST		0x0004	/* tlist must contain sortgrouprefs */
 #define CP_IGNORE_TLIST		0x0008	/* caller will replace tlist */
 
-int yb_nl_batch_size = 1;
+int yb_bnl_batch_size = 1;
 
 typedef struct ExpressionBatchCtx {
 	PlannerInfo *plannerinfo;
 	IndexPath *indexpath;
+	bool bail_out;
 } ExpressionBatchCtx;
 
 static Plan *create_plan_recurse(PlannerInfo *root, Path *best_path,
@@ -256,8 +257,12 @@ static BitmapOr *make_bitmap_or(List *bitmapplans);
 static NestLoop *make_nestloop(List *tlist,
 			  List *joinclauses, List *otherclauses, List *nestParams,
 			  Plan *lefttree, Plan *righttree,
-			  JoinType jointype, bool inner_unique, List *hashOps,
-			  List *innerHashAttNos);
+			  JoinType jointype, bool inner_unique);
+static BatchedNestLoop *make_batchednestloop(List *tlist,
+			  List *joinclauses, List *otherclauses, List *nestParams,
+			  Plan *lefttree, Plan *righttree,
+			  JoinType jointype, bool inner_unique,
+			  List *hashOps, List *innerHashAttNos);
 static HashJoin *make_hashjoin(List *tlist,
 			  List *joinclauses, List *otherclauses,
 			  List *hashclauses,
@@ -3567,7 +3572,6 @@ create_indexscan_plan(PlannerInfo *root,
 	 */
 	if (best_path->path.param_info)
 	{
-		// TODO make sure we're not here for hash joins
 		stripped_indexquals = (List *)
 			replace_nestloop_params(root, (Node *) stripped_indexquals);
 		local_qual = (List *)
@@ -3575,7 +3579,7 @@ create_indexscan_plan(PlannerInfo *root,
 		indexorderbys = (List *)
 			replace_nestloop_params(root, (Node *) indexorderbys);
 		
-		if (yb_nl_batch_size > 1)
+		if (yb_bnl_batch_size > 1)
 		{
 			stripped_indexquals = (List *)
 				batch_nestloop_params(root, (Node *) stripped_indexquals,
@@ -4695,53 +4699,69 @@ create_nestloop_plan(PlannerInfo *root,
 	outerrelids = best_path->outerjoinpath->parent->relids;
 	nestParams = identify_current_nestloop_params(root, outerrelids);
 
-	// Relids innerrelids = best_path->innerjoinpath->parent->relids;
+	/*
+	 * We currently only support batching where the join expression is a simple
+	 * (outer_var = inner_var) expression.
+	 */
+	bool is_batched = list_length(nestParams) == 1 && yb_bnl_batch_size > 1;
+	ListCell *l;
+	/* Check to see if we were able to batch all nested loop parameters. */
+	foreach(l, nestParams)
+	{
+		NestLoopParam *nlp = (NestLoopParam *) lfirst(l);
+		if (list_length(nlp->batchedparams) <= 1)
+		{
+			is_batched = false;
+			break;
+		}
+	}
+
 
 	List *hashOps = NIL;
 	List *innerAttNos = NIL;
 
-	ListCell *l;
-	foreach(l, joinrestrictclauses)
+	if (is_batched)
 	{
-		RestrictInfo *rinfo = (RestrictInfo *) lfirst(l);
-		if (rinfo->can_join && OidIsValid(rinfo->hashjoinoperator))
+		foreach(l, joinrestrictclauses)
 		{
-			// if nlhash can process this
-			Assert(is_opclause(rinfo->clause));
-			hashOps = lappend_oid(hashOps, rinfo->hashjoinoperator);
-			// OpExpr *opexpr = (OpExpr *) rinfo->clause;
-			// Expr *leftarg = rinfo->outer_is_left ?
-			// 	(Expr *) linitial(opexpr->args)
-			// 	: (Expr *) lsecond(opexpr->args);
-			// Expr *rightarg = rinfo->outer_is_left ?
-			// 	(Expr *) lsecond(opexpr->args)
-			// 	: (Expr *) linitial(opexpr->args);
-
-			// if (IsA(leftarg, Var)
-			// 	// && bms_is_member(((Var *) leftarg)->varno, outerrelids)
-			// 	&& IsA(rightarg, Var))
-			// 	// && bms_is_member(((Var *) rightarg)->varno, innerrelids))
-			// {
-			// 	innerAttNos =
-			// 		lappend_int(innerAttNos, ((Var *) rightarg)->varattno);
-			// }
-		}
-		else
-		{
-			hashOps = lappend_oid(hashOps, InvalidOid);
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(l);
+			if (rinfo->can_join && OidIsValid(rinfo->hashjoinoperator))
+			{
+				/* if nlhash can process this */
+				Assert(is_opclause(rinfo->clause));
+				hashOps = lappend_oid(hashOps, rinfo->hashjoinoperator);
+			}
+			else
+			{
+				hashOps = lappend_oid(hashOps, InvalidOid);
+			}
 		}
 	}
 
-	join_plan = make_nestloop(tlist,
-							  joinclauses,
-							  otherclauses,
-							  nestParams,
-							  outer_plan,
-							  inner_plan,
-							  best_path->jointype,
-							  best_path->inner_unique,
-							  hashOps,
-							  innerAttNos);
+	if (is_batched)
+	{
+		join_plan = (NestLoop *) make_batchednestloop(tlist,
+													  joinclauses,
+													  otherclauses,
+													  nestParams,
+													  outer_plan,
+													  inner_plan,
+													  best_path->jointype,
+													  best_path->inner_unique,
+													  hashOps,
+													  innerAttNos);
+	}
+	else
+	{
+		join_plan = make_nestloop(tlist,
+								  joinclauses,
+								  otherclauses,
+								  nestParams,
+								  outer_plan,
+								  inner_plan,
+								  best_path->jointype,
+								  best_path->inner_unique);
+	}
 
 	copy_generic_path_info(&join_plan->join.plan, &best_path->path);
 
@@ -5288,14 +5308,22 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 								   (void *) root);
 }
 
+/*
+ * Finds expressions that can be converted to batched form for a batched NL join
+ * and converts them. An example of such transformation can come in the form
+ * (inner_var = outer_param) -> (inner_var IN (outer_param_1, outer_param_2,
+ *  ..., outer_param_n)) where n = yb_bnl_batch_size. Currently we only support
+ * batching on expressions of the form (inner_var = outer_var). 
+ */
 static Node *
 batch_nestloop_params(PlannerInfo *root, Node *expr, IndexPath *indexpath)
 {
-	/* No setup needed for tree walk, so away we go */
 	ExpressionBatchCtx ctx;
 	ctx.indexpath = indexpath;
 	ctx.plannerinfo = root;
-	return batch_nestloop_params_mutator(expr, &ctx);
+	ctx.bail_out = false;
+	Node *ret = batch_nestloop_params_mutator(expr, &ctx);
+	return ctx.bail_out ? expr : ret;
 }
 
 static Node *
@@ -5304,8 +5332,18 @@ batch_nestloop_params_mutator(Node *node, ExpressionBatchCtx *ctx)
 	if (node == NULL)
 		return NULL;
 
+	if (ctx->bail_out)
+	{
+		return node;
+	}
+
 	IndexPath *indexpath = ctx->indexpath;
 	PlannerInfo *root = ctx->plannerinfo;
+
+	/*
+	* We think about batching expressions if it's in the form Param = Var for
+	* now.
+	*/
 	if (IsA(node, OpExpr))
 	{
 		OpExpr *opexpr = (OpExpr*) node;
@@ -5313,73 +5351,98 @@ batch_nestloop_params_mutator(Node *node, ExpressionBatchCtx *ctx)
 		int strategy = get_op_opfamily_strategy(
 			opexpr->opno,
 			*indexpath->indexinfo->opfamily);
+
+		Node *leftop = get_leftop((Expr*) opexpr);
+		Node *rightop = get_rightop((Expr*) opexpr);
+
 		if (strategy == BTEqualStrategyNumber
-			&& ((IsA(lsecond(opexpr->args), Param)
-			 	 && IsA(linitial(opexpr->args), Var))
-				|| (IsA(linitial(opexpr->args), Param)
-					&& IsA(lsecond(opexpr->args), Var))))
+			&& ((IsA(leftop, Param) && IsA(rightop, Var))
+				 || (IsA(rightop, Param) && IsA(leftop, Var))))
 		{
-			Var *var;
-			Param *param;
-			if (IsA(lsecond(opexpr->args), Var))
-			{
-				var = (Var *) lsecond(opexpr->args);
-				param = (Param *) linitial(opexpr->args);
-			}
-			else
-			{
-				var = (Var *) linitial(opexpr->args);
-				param = (Param *) lsecond(opexpr->args);
-			}
-			Assert(yb_nl_batch_size > 1);
+		Var *var;
+		Param *param;
+		if (IsA(rightop, Var))
+		{
+			var = (Var *) rightop;
+			param = (Param *) leftop;
+		}
+		else
+		{
+			var = (Var *) leftop;
+			param = (Param *) rightop;
+		}
 
-			if (param->paramkind != PARAM_EXEC
-				|| param->location == -1
-				|| root->curOuterParams == NULL) {
+		Assert(IsA(var, Var) && IsA(param, Param));
+		Assert(yb_bnl_batch_size > 1);
+
+		if (param->paramkind != PARAM_EXEC
+			|| param->location == -1
+			|| root->curOuterParams == NULL) {
+			return node;
+		}
+
+		List *batched_param_list =
+			(List *) batch_nestloop_param(root, param);
+		if (batched_param_list == NULL)
+			return node;
+
+		Assert(batched_param_list->length == yb_bnl_batch_size);
+
+		/* Create the ScalarArrayOpExpr (batched IN expression). */
+		ScalarArrayOpExpr *saop = makeNode(ScalarArrayOpExpr);
+		saop->opno = opexpr->opno;
+		saop->opfuncid = opexpr->opfuncid;
+		saop->useOr = true;
+
+		Param *firstparam = (Param*) linitial(batched_param_list);
+
+		ArrayExpr *arrexpr = makeNode(ArrayExpr);
+		Oid scalar_type = firstparam->paramtype;
+		Oid array_type;
+		if (OidIsValid(scalar_type) && scalar_type != RECORDOID)
+			array_type = get_array_type(scalar_type);
+		else
+			array_type = InvalidOid;
+
+		arrexpr->array_typeid = array_type;
+		arrexpr->element_typeid = scalar_type;
+		arrexpr->multidims = false;
+		arrexpr->array_collid = firstparam->paramcollid;
+		arrexpr->elements = batched_param_list;
+
+		List *saopargs = NIL;
+		saopargs = lappend(saopargs, copyObject(var));
+		saopargs = lappend(saopargs, arrexpr);
+
+		saop->args = saopargs;
+		saop->inputcollid = firstparam->paramcollid;
+		saop->location = -1;
+		return (Node*)saop;
+		}
+	}
+
+	if (IsA(node, Param))
+	{
+		Param *param = castNode(Param, node);
+		NestLoopParam *nlp;
+		ListCell   *lc;
+
+		foreach(lc, root->curOuterParams)
+		{
+			nlp = (NestLoopParam *) lfirst(lc);
+			if (nlp->paramno == param->paramid)
+			{
+				/* Found this param. */
+				/* We found an unbatchable nlp so bail out */
+				ctx->bail_out = true;
 				return node;
 			}
-
-			List *batched_param_list = (List *) batch_nestloop_param(root, param);
-			if (batched_param_list == NULL)
-				return node;
-
-			Assert(batched_param_list->length == yb_nl_batch_size);
-			ScalarArrayOpExpr *saop = makeNode(ScalarArrayOpExpr);
-			saop->opno = opexpr->opno;
-			saop->opfuncid = opexpr->opfuncid;
-			saop->useOr = true;
-
-			Param *firstparam = (Param*) linitial(batched_param_list);
-
-			ArrayExpr *arrexpr = makeNode(ArrayExpr);
-			Oid scalar_type = firstparam->paramtype;
-			Oid array_type;
-			if (OidIsValid(scalar_type) && scalar_type != RECORDOID)
-				array_type = get_array_type(scalar_type);
-			else
-				array_type = InvalidOid;
-
-			arrexpr->array_typeid = array_type;
-			arrexpr->element_typeid = scalar_type;
-			arrexpr->multidims = false;
-			arrexpr->array_collid = firstparam->paramcollid;
-			arrexpr->elements = batched_param_list;
-
-			List *saopargs = NIL;
-			saopargs = lappend(saopargs, copyObject(var));
-			saopargs = lappend(saopargs, arrexpr);
-
-			saop->args = saopargs;
-			saop->inputcollid = firstparam->paramcollid;
-			saop->location = -1;
-			return (Node*)saop;
-			// TODO: think about memory leak here on replaced expr?
 		}
 	}
 
 	Node * ret = expression_tree_mutator(node,
-								   		 batch_nestloop_params_mutator,
-								   		 (void *) ctx);
+							batch_nestloop_params_mutator,
+							(void *) ctx);
 	return ret;
 }
 
@@ -5425,7 +5488,7 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path)
 		 * in-place below.
 		 */
 		clause = replace_nestloop_params(root, (Node *) rinfo->clause);
-		if (yb_nl_batch_size > 1)
+		if (yb_bnl_batch_size > 1)
 		{
 			clause = batch_nestloop_params(root, (Node *) clause, index_path);
 		}
@@ -6532,9 +6595,7 @@ make_nestloop(List *tlist,
 			  Plan *lefttree,
 			  Plan *righttree,
 			  JoinType jointype,
-			  bool inner_unique,
-			  List *hashOps,
-			  List *innerHashAttNos)
+			  bool inner_unique)
 {
 	NestLoop   *node = makeNode(NestLoop);
 	Plan	   *plan = &node->join.plan;
@@ -6547,6 +6608,33 @@ make_nestloop(List *tlist,
 	node->join.inner_unique = inner_unique;
 	node->join.joinqual = joinclauses;
 	node->nestParams = nestParams;
+
+	return node;
+}
+
+static BatchedNestLoop *
+make_batchednestloop(List *tlist,
+					 List *joinclauses,
+					 List *otherclauses,
+					 List *nestParams,
+					 Plan *lefttree,
+					 Plan *righttree,
+					 JoinType jointype,
+					 bool inner_unique,
+					 List *hashOps,
+					 List *innerHashAttNos)
+{
+	BatchedNestLoop   *node = makeNode(BatchedNestLoop);
+	Plan	   *plan = &node->nl.join.plan;
+
+	plan->targetlist = tlist;
+	plan->qual = otherclauses;
+	plan->lefttree = lefttree;
+	plan->righttree = righttree;
+	node->nl.join.jointype = jointype;
+	node->nl.join.inner_unique = inner_unique;
+	node->nl.join.joinqual = joinclauses;
+	node->nl.nestParams = nestParams;
 	node->hashOps = hashOps;
 	node->innerHashAttNos = innerHashAttNos;
 

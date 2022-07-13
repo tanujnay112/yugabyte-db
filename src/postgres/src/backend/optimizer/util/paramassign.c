@@ -307,7 +307,7 @@ replace_outer_grouping(PlannerInfo *root, GroupingFunc *grp)
 	return retval;
 }
 
-extern int yb_nl_batch_size;
+extern int yb_bnl_batch_size;
 
 /*
  * Generate a Param node to replace the given Var,
@@ -359,7 +359,7 @@ replace_nestloop_param_var(PlannerInfo *root, Var *var)
 List *
 batch_nestloop_param(PlannerInfo *root, Param *param)
 {
-	Assert(yb_nl_batch_size > 1);
+	Assert(yb_bnl_batch_size > 1);
 	Assert(root->curOuterParams != NULL);
 	List *paramnolist = NIL;
 	NestLoopParam *nlp;
@@ -372,8 +372,13 @@ batch_nestloop_param(PlannerInfo *root, Param *param)
 		nlp = (NestLoopParam *) lfirst(lc);
 		if (nlp->paramno == param->paramid)
 		{
+			/* Found this param. */
 			if (nlp->batchedparams != NIL)
 			{
+				/* 
+				 * Found param is already batched so we just copy its
+				 * batch list.
+				 */
 				ListCell *l;
 				List *paramlist = NIL;
 				foreach(l, nlp->batchedparams)
@@ -392,13 +397,16 @@ batch_nestloop_param(PlannerInfo *root, Param *param)
 			}
 			else
 			{
+				/* 
+				 * Found param is not batched yet so we batch it by
+				 * creating a list of newly generated batch parameters for it.
+				 */
 				found = true;
 				break;
 			}
 		}
 	}
 
-	// Assert(found);
 	if (!found)
 	{
 		return NULL;
@@ -406,7 +414,7 @@ batch_nestloop_param(PlannerInfo *root, Param *param)
 	Var *var = nlp->paramval;
 	paramnolist = lappend_int(paramnolist, nlp->paramno);
 	paramlist = lappend(paramlist, param);
-	for (size_t i = 1; i < yb_nl_batch_size; i++)
+	for (size_t i = 1; i < yb_bnl_batch_size; i++)
 	{
 		Param *param = generate_new_exec_param(root,
 											   var->vartype,

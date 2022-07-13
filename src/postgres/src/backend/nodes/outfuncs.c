@@ -769,6 +769,16 @@ _outNestLoop(StringInfo str, const NestLoop *node)
 }
 
 static void
+_outBatchedNestLoop(StringInfo str, const BatchedNestLoop *node)
+{
+	WRITE_NODE_TYPE("BATCHEDNESTLOOP");
+
+	_outNestLoop(str, &node->nl);
+	WRITE_NODE_FIELD(hashOps);
+	WRITE_NODE_FIELD(innerHashAttNos);
+}
+
+static void
 _outMergeJoin(StringInfo str, const MergeJoin *node)
 {
 	int			numCols;
@@ -3865,6 +3875,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_NestLoop:
 				_outNestLoop(str, obj);
+				break;
+			case T_BatchedNestLoop:
+				_outBatchedNestLoop(str, obj);
 				break;
 			case T_MergeJoin:
 				_outMergeJoin(str, obj);

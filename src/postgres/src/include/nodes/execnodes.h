@@ -730,6 +730,7 @@ typedef struct TupleHashTableData
 	/* The following fields are set transiently for each table search: */
 	TupleTableSlot *inputslot;	/* current input tuple's slot */
 	FmgrInfo   *in_hash_funcs;	/* hash functions for input datatype(s) */
+	AttrNumber *in_keyColIdx;	/* attr numbers of input key columns */
 	ExprState  *cur_eq_func;	/* comparator for input vs. table */
 	uint32		hash_iv;		/* hash-function IV */
 	ExprContext *exprcontext;	/* expression context */
@@ -1772,29 +1773,47 @@ typedef struct JoinState
 } JoinState;
 
 
+/* 
+ * Batch state of batched NL Join. These are explained in the comment for
+ * ExecBatchedNestLoop in nodeBatchedNestLoop.c.
+ */
 typedef enum NLBatchStatus
 {
-	NL_INIT,
-	NL_BATCHING,
-	NL_FLUSHING,
-	NL_NOBATCH
+	BNL_INIT,
+	BNL_NEWINNER,
+	BNL_MATCHING,
+	BNL_FLUSHING
 } NLBatchStatus;
 
+/* Struct to contain tuple and its matching info in a hash bucket*/
+typedef struct BucketTupleInfo
+{
+	MinimalTuple tuple;
+	bool matched;
+} BucketTupleInfo;
+
+/* Buckets of MinimalTuples stored in the hash table. */
 typedef struct NLBucketInfo
 {
-	ListCell *current;
-	List *tuples;
-	bool matched;
+	ListCell *current; /* The current list element being iterated on. */
+	List *tuples;	   /* List of BucketTupleInfo in this bucket */
 } NLBucketInfo;
 
-struct NestLoopState;
+struct BatchedNestLoopState;
 
-typedef bool (*FlushTupleFn_t)(struct NestLoopState *, ExprContext *);
-typedef bool (*GetNewOuterTupleFn_t)(struct NestLoopState *node, ExprContext *econtext);
-typedef void (*ResetBatchFn_t)(struct NestLoopState *node, ExprContext *econtext);
-typedef void (*RegisterOuterMatchFn_t)(struct NestLoopState *node, ExprContext *econtext);
-typedef void (*AddTupleToOuterBatchFn_t)(struct NestLoopState *node, TupleTableSlot *slot);
-typedef void (*FreeBatchFn_t)(struct NestLoopState *node);
+typedef bool (*FlushTupleFn_t)(struct BatchedNestLoopState *, ExprContext *);
+
+typedef bool (*GetNewOuterTupleFn_t)(struct BatchedNestLoopState *node,
+									 ExprContext *econtext);
+typedef void (*ResetBatchFn_t)(struct BatchedNestLoopState *node,
+							   ExprContext *econtext);
+typedef void (*RegisterOuterMatchFn_t)(struct BatchedNestLoopState *node,
+									   ExprContext *econtext);
+typedef void (*AddTupleToOuterBatchFn_t)(struct BatchedNestLoopState *node,
+										 TupleTableSlot *slot);
+
+typedef void (*FreeBatchFn_t)(struct BatchedNestLoopState *node);
+typedef void (*EndFn_t)(struct BatchedNestLoopState *node);
 
 /* ----------------
  *	 NestLoopState information
@@ -1808,31 +1827,46 @@ typedef struct NestLoopState
 {
 	JoinState	js;				/* its first field is NodeTag */
 	bool		nl_NeedNewOuter;
-	bool		nl_NeedNewInner;
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
+} NestLoopState;
 
-	Tuplestorestate *batchedtuplestorestate;
-	NLBatchStatus nl_currentstatus;
-	List *nl_batchedmatchedinfo;
-	int nl_batchtupno;
+typedef struct BatchedNestLoopState
+{
+	JoinState	js;				/* its first field is NodeTag */
+	TupleTableSlot *nl_NullInnerTupleSlot;
+
+	/* State for tuplestore batch strategy */
+	Tuplestorestate *bnl_tupleStoreState;
+	NLBatchStatus bnl_currentstatus;
+	List *bnl_batchMatchedInfo;
+	int bnl_batchTupNo;
 	
+	/* State for hashing batch strategy */
+
+	/*
+	 * This hash table stores instance of NLBucketInfo, each of which
+	 * stores lists of tuples with the same hash value.
+	 */
 	TupleHashTable hashtable;
 	TupleTableSlot *hashslot;
 	bool hashiterinit;
 	TupleHashIterator hashiter;
+	BucketTupleInfo *current_ht_tuple;
 	TupleHashEntry current_hash_entry;
 	FmgrInfo *hashFunctions;
 	int numLookupAttrs;
 	AttrNumber *innerAttrs;
 
+	/* Function pointers to local join methods */
 	FlushTupleFn_t FlushTupleImpl;
 	GetNewOuterTupleFn_t GetNewOuterTupleImpl;
 	ResetBatchFn_t ResetBatchImpl;
 	RegisterOuterMatchFn_t RegisterOuterMatchImpl;
 	AddTupleToOuterBatchFn_t AddTupleToOuterBatchImpl;
 	FreeBatchFn_t FreeBatchImpl;
-} NestLoopState;
+	EndFn_t EndImpl;
+} BatchedNestLoopState;
 
 /* ----------------
  *	 MergeJoinState information

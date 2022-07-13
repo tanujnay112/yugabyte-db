@@ -1015,6 +1015,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"yb_bnl_enable_hashing", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables batched nested loop joins to use hashing to "
+						 "process its matches."),
+			NULL
+		},
+		&yb_bnl_enable_hashing,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_partition_pruning", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enable plan-time and run-time partition pruning."),
 			gettext_noop("Allows the query planner and executor to compare partition "
@@ -2155,13 +2165,13 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"yb_nl_batch_size", PGC_USERSET, QUERY_TUNING_OTHER,
+		{"yb_bnl_batch_size", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Batch size of nested loop joins"),
-			gettext_noop("Set to 1 to turn off"),
-			GUC_NOT_IN_SAMPLE | GUC_UNIT_S
+			gettext_noop("Set to 1 to always use simple nested loop joins"),
+			GUC_NOT_IN_SAMPLE
 		},
-		&yb_nl_batch_size,
-		2, 1, INT_MAX,
+		&yb_bnl_batch_size,
+		1, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 

@@ -145,7 +145,6 @@ extern TupleHashEntry FindTupleHashEntry(TupleHashTable hashtable,
 				   TupleTableSlot *slot,
 				   ExprState *eqcomp,
 				   FmgrInfo *hashfunctions,
-				   int numCols,
 				   AttrNumber *keyColIdx);
 extern void ResetTupleHashTable(TupleHashTable hashtable);
 

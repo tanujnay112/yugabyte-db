@@ -99,9 +99,7 @@ execTuplesHashPrepare(int numCols,
 {
 	int			i;
 
-	if (eqFuncOids)
-		*eqFuncOids = (Oid *) palloc(numCols * sizeof(Oid));
-
+	*eqFuncOids = (Oid *) palloc(numCols * sizeof(Oid));
 	*hashFunctions = (FmgrInfo *) palloc(numCols * sizeof(FmgrInfo));
 
 	for (i = 0; i < numCols; i++)
@@ -118,9 +116,7 @@ execTuplesHashPrepare(int numCols,
 				 eq_opr);
 		/* We're not supporting cross-type cases here */
 		Assert(left_hash_function == right_hash_function);
-
-		if (eqFuncOids)
-			(*eqFuncOids)[i] = eq_function;
+		(*eqFuncOids)[i] = eq_function;
 		fmgr_info(right_hash_function, &(*hashFunctions)[i]);
 	}
 }
@@ -187,6 +183,7 @@ BuildTupleHashTableExt(PlanState *parent,
 	hashtable->tableslot = NULL;	/* will be made on first lookup */
 	hashtable->inputslot = NULL;
 	hashtable->in_hash_funcs = NULL;
+	hashtable->in_keyColIdx = NULL;
 	hashtable->cur_eq_func = NULL;
 
 	/*
@@ -211,17 +208,10 @@ BuildTupleHashTableExt(PlanState *parent,
 	hashtable->tableslot = MakeSingleTupleTableSlot(CreateTupleDescCopy(inputDesc));
 
 	/* build comparator for all columns */
-	if (eqfuncoids == NULL)
-	{
-		hashtable->tab_eq_func = NULL;
-	}
-	else
-	{
-		hashtable->tab_eq_func = ExecBuildGroupingEqual(inputDesc, inputDesc,
-														numCols,
-														keyColIdx, eqfuncoids,
-														NULL);
-	}
+	hashtable->tab_eq_func = ExecBuildGroupingEqual(inputDesc, inputDesc,
+													numCols,
+													keyColIdx, eqfuncoids,
+													NULL);
 
 	/*
 	 * While not pretty, it's ok to not shut down this context, but instead
@@ -303,6 +293,7 @@ LookupTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 	/* set up data needed by hash and match functions */
 	hashtable->inputslot = slot;
 	hashtable->in_hash_funcs = hashtable->tab_hash_funcs;
+	hashtable->in_keyColIdx = hashtable->keyColIdx;
 	hashtable->cur_eq_func = hashtable->tab_eq_func;
 
 	key = NULL;					/* flag to reference inputslot */
@@ -343,14 +334,14 @@ LookupTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
  * case of LookupTupleHashEntry, except that it supports cross-type
  * comparisons, in which the given tuple is not of the same type as the
  * table entries.  The caller must provide the hash functions to use for
- * the input tuple, as well as the equality functions, since these may be
+ * the input tuple, as well as the equality functions, and key attributes
+ * to use for looking up with the given tuple since these may be
  * different from the table's internal functions.
  */
 TupleHashEntry
 FindTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 				   ExprState *eqcomp,
 				   FmgrInfo *hashfunctions,
-				   int numCols,
 				   AttrNumber *keyColIdx)
 {
 	TupleHashEntry entry;
@@ -363,12 +354,11 @@ FindTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 	/* Set up data needed by hash and match functions */
 	hashtable->inputslot = slot;
 	hashtable->in_hash_funcs = hashfunctions;
+	hashtable->in_keyColIdx = keyColIdx;
 	hashtable->cur_eq_func = eqcomp;
 
 	int oldNumCols = hashtable->numCols;
 	AttrNumber *oldKeyColIdx = hashtable->keyColIdx;
-	hashtable->numCols = numCols;
-	hashtable->keyColIdx = keyColIdx;
 
 	/* Search the hash table */
 	key = NULL;					/* flag to reference inputslot */
@@ -410,6 +400,7 @@ TupleHashTableHash(struct tuplehash_hash *tb, const MinimalTuple tuple)
 		/* Process the current input tuple for the table */
 		slot = hashtable->inputslot;
 		hashfunctions = hashtable->in_hash_funcs;
+		keyColIdx = hashtable->in_keyColIdx;
 	}
 	else
 	{
@@ -466,10 +457,6 @@ TupleHashTableMatch(struct tuplehash_hash *tb, const MinimalTuple tuple1, const 
 	TupleTableSlot *slot2;
 	TupleHashTable hashtable = (TupleHashTable) tb->private_data;
 
-	if (hashtable->cur_eq_func == NULL)
-	{
-		return 1;
-	}
 	ExprContext *econtext = hashtable->exprcontext;
 
 	/*

@@ -162,7 +162,6 @@ ExecHashSubPlan(SubPlanState *node,
 							   slot,
 							   node->cur_eq_comp,
 							   node->lhs_hash_funcs,
-							   node->hashtable->numCols,
 							   node->hashtable->keyColIdx) != NULL)
 		{
 			ExecClearTuple(slot);

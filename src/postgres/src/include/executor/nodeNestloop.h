@@ -16,8 +16,6 @@
 
 #include "nodes/execnodes.h"
 
-typedef bool HashedTupleData;
-
 extern NestLoopState *ExecInitNestLoop(NestLoop *node, EState *estate, int eflags);
 extern void ExecEndNestLoop(NestLoopState *node);
 extern void ExecReScanNestLoop(NestLoopState *node);

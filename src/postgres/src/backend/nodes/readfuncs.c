@@ -2060,14 +2060,41 @@ _readJoin(void)
 /*
  * _readNestLoop
  */
-static NestLoop *
-_readNestLoop(void)
+void
+ReadCommonNestLoop(NestLoop *local_node)
 {
-	READ_LOCALS(NestLoop);
+	READ_TEMP_LOCALS();
 
 	ReadCommonJoin(&local_node->join);
 
 	READ_NODE_FIELD(nestParams);
+}
+
+/*
+ * _readNestLoop
+ */
+static NestLoop *
+_readNestLoop(void)
+{
+	READ_LOCALS_NO_FIELDS(NestLoop);
+
+	ReadCommonNestLoop(local_node);
+
+	READ_DONE();
+}
+
+/*
+ * _readBatchedNestLoop
+ */
+static BatchedNestLoop *
+_readBatchedNestLoop(void)
+{
+	READ_LOCALS(BatchedNestLoop);
+
+	ReadCommonJoin(&local_node->nl.join);
+
+	READ_NODE_FIELD(hashOps);
+	READ_NODE_FIELD(innerHashAttNos);
 
 	READ_DONE();
 }
@@ -2774,6 +2801,8 @@ parseNodeString(void)
 		return_value = _readJoin();
 	else if (MATCH("NESTLOOP", 8))
 		return_value = _readNestLoop();
+	else if (MATCH("BATCHEDNESTLOOP", 15))
+		return_value = _readBatchedNestLoop();
 	else if (MATCH("MERGEJOIN", 9))
 		return_value = _readMergeJoin();
 	else if (MATCH("HASHJOIN", 8))

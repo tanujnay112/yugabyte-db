@@ -884,6 +884,28 @@ _copyNestLoop(const NestLoop *from)
 	return newnode;
 }
 
+/*
+ * _copyBatchedNestLoop
+ */
+static BatchedNestLoop *
+_copyBatchedNestLoop(const BatchedNestLoop *from)
+{
+	BatchedNestLoop   *newnode = makeNode(BatchedNestLoop);
+
+	/*
+	 * copy NestLoop field
+	 */
+	COPY_SCALAR_FIELD(nl);
+
+	/*
+	 * copy remainder of node
+	 */
+	COPY_NODE_FIELD(innerHashAttNos);
+	COPY_NODE_FIELD(hashOps);
+
+	return newnode;
+}
+
 
 /*
  * _copyMergeJoin
@@ -4997,6 +5019,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_NestLoop:
 			retval = _copyNestLoop(from);
+			break;
+		case T_BatchedNestLoop:
+			retval = _copyBatchedNestLoop(from);
 			break;
 		case T_MergeJoin:
 			retval = _copyMergeJoin(from);
