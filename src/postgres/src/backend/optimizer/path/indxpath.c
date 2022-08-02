@@ -661,12 +661,129 @@ get_join_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	/* Build index path(s) using the collected set of clauses */
 	get_index_paths(root, rel, index, &clauseset, bitindexpaths);
 
+	if (to_batch)
+	{
+		yb_get_batched_index_paths(root, rel, index, &clauseset, bitindexpaths);
+	}
+
 	/*
 	 * Remember we considered paths for this set of relids.  We use lcons not
 	 * lappend to avoid confusing the loop in consider_index_join_outer_rels.
 	 */
 	*considered_relids = lcons(relids, *considered_relids);
 }
+
+static void
+yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
+						   IndexOptInfo *index, IndexClauseSet *clauses,
+						   List **bitindexpaths)
+{
+	List	   *indexpaths;
+	bool		skip_nonnative_saop = false;
+	bool		skip_lower_saop = false;
+	ListCell   *lc;
+
+	Relids batchedrelids = NIL;
+	IndexClauseSet batchedclauses;
+	memset(&batchedclauses, 0, sizeof(IndexClauseSet));
+	bool nonempty = false;
+	for (size_t i = 0; i < INDEX_MAX_KEYS; i++)
+	{
+		List *colclauses = clauses->indexclauses[i];
+		foreach (lc, colclauses)
+		{
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+			// if we can batch up outer vars in rinfo then do so
+			RestrictInfo *batched = batch_clause(rinfo, batchedrelids);
+			nonempty = true;
+
+			if (batched != NULL)
+			{
+				lappend(batchedclauses.indexclauses[i], batched);
+			}
+			else
+			{
+				// if it contains outer rel then we bail
+				// if it doesn't then we just
+				lappend(batchedclauses.indexclauses[i], rinfo);
+			}
+		}
+	}
+
+	batchedclauses.nonempty = nonempty;
+
+	/*
+	 * Build simple index paths using the clauses.  Allow ScalarArrayOpExpr
+	 * clauses only if the index AM supports them natively, and skip any such
+	 * clauses for index columns after the first (so that we produce ordered
+	 * paths if possible).
+	 */
+	indexpaths = build_index_paths(root, rel,
+								   index, &batchedclauses,
+								   index->predOK,
+								   ST_ANYSCAN,
+								   &skip_nonnative_saop,
+								   &skip_lower_saop);
+
+	/*
+	 * If we skipped any lower-order ScalarArrayOpExprs on an index with an AM
+	 * that supports them, then try again including those clauses.  This will
+	 * produce paths with more selectivity but no ordering.
+	 */
+	if (skip_lower_saop)
+	{
+		indexpaths = list_concat(indexpaths,
+								 build_index_paths(root, rel,
+												   index, &batchedclauses,
+												   index->predOK,
+												   ST_ANYSCAN,
+												   &skip_nonnative_saop,
+												   NULL));
+	}
+
+	/*
+	 * Submit all the ones that can form plain IndexScan plans to add_path. (A
+	 * plain IndexPath can represent either a plain IndexScan or an
+	 * IndexOnlyScan, but for our purposes here that distinction does not
+	 * matter.  However, some of the indexes might support only bitmap scans,
+	 * and those we mustn't submit to add_path here.)
+	 *
+	 * Also, pick out the ones that are usable as bitmap scans.  For that, we
+	 * must discard indexes that don't support bitmap scans, and we also are
+	 * only interested in paths that have some selectivity; we should discard
+	 * anything that was generated solely for ordering purposes.
+	 */
+	foreach(lc, indexpaths)
+	{
+		IndexPath  *ipath = (IndexPath *) lfirst(lc);
+		ipath->path.param_info->yb_ppi_req_outer_batched = batchedrelids
+
+		if (index->amhasgettuple)
+			add_path(rel, (Path *) ipath);
+
+		if (index->amhasgetbitmap &&
+			(ipath->path.pathkeys == NIL ||
+			 ipath->indexselectivity < 1.0))
+			*bitindexpaths = lappend(*bitindexpaths, ipath);
+	}
+
+	/*
+	 * If there were ScalarArrayOpExpr clauses that the index can't handle
+	 * natively, generate bitmap scan paths relying on executor-managed
+	 * ScalarArrayOpExpr.
+	 */
+	if (skip_nonnative_saop)
+	{
+		indexpaths = build_index_paths(root, rel,
+									   index, clauses,
+									   false,
+									   ST_BITMAPSCAN,
+									   NULL,
+									   NULL);
+		*bitindexpaths = list_concat(*bitindexpaths, indexpaths);
+	}
+}
+
 
 /*
  * eclass_already_used
@@ -2834,6 +2951,7 @@ check_index_predicates(PlannerInfo *root, RelOptInfo *rel)
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
 		/* Check if clause can be moved to this rel */
+		// modify here?
 		if (!join_clause_is_movable_to(rinfo, rel))
 			continue;
 
@@ -2853,6 +2971,7 @@ check_index_predicates(PlannerInfo *root, RelOptInfo *rel)
 	else
 		otherrels = bms_difference(root->all_baserels, rel->relids);
 
+	// and here?
 	if (!bms_is_empty(otherrels))
 		clauselist =
 			list_concat(clauselist,
