@@ -356,78 +356,56 @@ replace_nestloop_param_var(PlannerInfo *root, Var *var)
 	return param;
 }
 
-List *
-batch_nestloop_param(PlannerInfo *root, Param *param)
+Param *
+replace_nestloop_batched_param_var(PlannerInfo *root, BatchedVar *bvar)
 {
-	Assert(yb_bnl_batch_size > 1);
-	Assert(root->curOuterParams != NULL);
-	List *paramnolist = NIL;
+	Param	   *param;
 	NestLoopParam *nlp;
 	ListCell   *lc;
-	bool found = false;
-	List *paramlist = NIL;
+	Var *var = bvar->orig_var;
 
+	/* Is this Var already listed in root->curOuterParams? */
 	foreach(lc, root->curOuterParams)
 	{
 		nlp = (NestLoopParam *) lfirst(lc);
-		if (nlp->paramno == param->paramid)
+		if (equal(var, nlp->paramval))
 		{
-			/* Found this param. */
-			if (nlp->batchedparams != NIL)
+			/* Yes, so just make a Param referencing this NLP's slot */
+			if (list_length(nlp->batchedparams) < bvar->serial_no + 1)
 			{
-				/* 
-				 * Found param is already batched so we just copy its
-				 * batch list.
-				 */
-				ListCell *l;
-				List *paramlist = NIL;
-				foreach(l, nlp->batchedparams)
+				param = generate_new_exec_param(root,
+												var->vartype,
+												var->vartypmod,
+												var->varcollid);
+				param->paramkind = PARAM_EXEC;
+				param->paramtype = var->vartype;
+				param->paramtypmod = var->vartypmod;
+				param->paramcollid = var->varcollid;
+				param->location = var->location;
+				if (nlp->batchedparams == NIL)
 				{
-					int paramno = lfirst_int(l);
-					Param *new_param = makeNode(Param);
-					new_param->paramkind = PARAM_EXEC;
-					new_param->paramid = paramno;
-					new_param->paramtype = param->paramtype;
-					new_param->paramtypmod = param->paramtypmod;
-					new_param->paramcollid = param->paramcollid;
-					new_param->location = -1;
-					paramlist = lappend(paramlist, new_param);
+					nlp->batchedparams =
+						lappend_int(nlp->batchedparams, nlp->paramno);
 				}
-				return paramlist;
+				nlp->batchedparams = lappend_int(nlp->batchedparams, param->paramid);
 			}
 			else
 			{
-				/* 
-				 * Found param is not batched yet so we batch it by
-				 * creating a list of newly generated batch parameters for it.
-				 */
-				found = true;
-				break;
+				param = makeNode(Param);
+				param->paramkind = PARAM_EXEC;
+				param->paramid = list_nth_int(nlp->batchedparams,
+											  bvar->serial_no);
+				param->paramtype = var->vartype;
+				param->paramtypmod = var->vartypmod;
+				param->paramcollid = var->varcollid;
+				param->location = var->location;
 			}
+			return param;
 		}
 	}
 
-	if (!found)
-	{
-		return NULL;
-	}
-	Var *var = nlp->paramval;
-	paramnolist = lappend_int(paramnolist, nlp->paramno);
-	paramlist = lappend(paramlist, param);
-	for (size_t i = 1; i < yb_bnl_batch_size; i++)
-	{
-		Param *param = generate_new_exec_param(root,
-											   var->vartype,
-											   var->vartypmod,
-											   var->varcollid);
-		param->location = -1;
-
-		paramlist = lappend(paramlist, param);
-		paramnolist = lappend_int(paramnolist, param->paramid);
-	}
-
-	nlp->batchedparams = paramnolist;
-	return paramlist;
+	Assert(false);
+	return NULL;
 }
 
 /*

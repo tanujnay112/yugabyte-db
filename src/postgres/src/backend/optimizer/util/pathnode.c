@@ -249,6 +249,7 @@ set_cheapest(RelOptInfo *parent_rel)
 	Path	   *cheapest_total_path;
 	Path	   *best_param_path;
 	List	   *parameterized_paths;
+	List	   *batched_parameterized_paths;
 	ListCell   *p;
 
 	Assert(IsA(parent_rel, RelOptInfo));
@@ -257,7 +258,7 @@ set_cheapest(RelOptInfo *parent_rel)
 		elog(ERROR, "could not devise a query plan for the given query");
 
 	cheapest_startup_path = cheapest_total_path = best_param_path = NULL;
-	parameterized_paths = NIL;
+	parameterized_paths = batched_parameterized_paths = NIL;
 
 	foreach(p, parent_rel->pathlist)
 	{
@@ -268,6 +269,12 @@ set_cheapest(RelOptInfo *parent_rel)
 		{
 			/* Parameterized path, so add it to parameterized_paths */
 			parameterized_paths = lappend(parameterized_paths, path);
+
+			if (!bms_is_empty(path->param_info->yb_ppi_req_outer_batched))
+			{
+				batched_parameterized_paths =
+					lappend(batched_parameterized_paths, path);
+			}
 
 			/*
 			 * If we have an unparameterized cheapest-total, we no longer care
@@ -360,6 +367,8 @@ set_cheapest(RelOptInfo *parent_rel)
 	parent_rel->cheapest_total_path = cheapest_total_path;
 	parent_rel->cheapest_unique_path = NULL;	/* computed only if needed */
 	parent_rel->cheapest_parameterized_paths = parameterized_paths;
+	parent_rel->cheapest_batched_parameterized_paths =
+		batched_parameterized_paths;
 }
 
 /*
@@ -2255,8 +2264,12 @@ create_nestloop_path(PlannerInfo *root,
 	 * because the restrict_clauses list can affect the size and cost
 	 * estimates for this path.
 	 */
-	if (yb_bnl_batch_size <= 1
-		&& bms_overlap(inner_req_outer, outer_path->parent->relids))
+	 ParamPathInfo *param_info = inner_path->param_info;
+	 Relids inner_req_outer_batched = param_info == NULL
+	 							? NULL : param_info->yb_ppi_req_outer_batched;
+	 bool is_batched = bms_overlap(inner_req_outer_batched,
+	 							   outer_path->parent->relids);
+	if (!is_batched && bms_overlap(inner_req_outer, outer_path->parent->relids))
 	{
 		Relids		inner_and_outer = bms_union(inner_path->parent->relids,
 												inner_req_outer);

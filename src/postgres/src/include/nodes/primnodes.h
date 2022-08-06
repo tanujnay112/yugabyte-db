@@ -181,6 +181,13 @@ typedef struct Var
 	int			location;		/* token location, or -1 if unknown */
 } Var;
 
+typedef struct BatchedVar
+{
+	Expr xpr;
+	Var *orig_var;
+	int serial_no;
+} BatchedVar;
+
 /*
  * Const
  *

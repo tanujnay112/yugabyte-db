@@ -1860,6 +1860,7 @@ expression_tree_walker(Node *node,
 	switch (nodeTag(node))
 	{
 		case T_Var:
+		case T_BatchedVar:
 		case T_Const:
 		case T_Param:
 		case T_CaseTestExpr:
@@ -2280,6 +2281,7 @@ expression_tree_walker_min_attr(Node *node,
 	switch (nodeTag(node))
 	{
 		case T_Var:
+		case T_BatchedVar:
 		case T_Const:
 		case T_Param:
 		case T_CaseTestExpr:
@@ -2865,6 +2867,16 @@ expression_tree_mutator(Node *node,
 
 				FLATCOPY(newnode, var, Var);
 				return (Node *) newnode;
+			}
+			break;
+		case T_BatchedVar:
+			{
+				BatchedVar *bvar = (BatchedVar *) node;
+				BatchedVar *newnode;
+
+				FLATCOPY(newnode, bvar, BatchedVar);
+				MUTATE(newnode->orig_var, bvar->orig_var, Var *);
+				return (Node *) newnode;			
 			}
 			break;
 		case T_Const:

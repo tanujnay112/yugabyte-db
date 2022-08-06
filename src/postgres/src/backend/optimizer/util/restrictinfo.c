@@ -115,6 +115,7 @@ make_restrictinfo_internal(Expr *clause,
 	restrictinfo->outerjoin_delayed = outerjoin_delayed;
 	restrictinfo->pseudoconstant = pseudoconstant;
 	restrictinfo->can_join = false; /* may get set below */
+	restrictinfo->can_batch = false;
 	restrictinfo->security_level = security_level;
 	restrictinfo->outer_relids = outer_relids;
 	restrictinfo->nullable_relids = nullable_relids;
@@ -180,6 +181,8 @@ make_restrictinfo_internal(Expr *clause,
 	 * joinclause list).
 	 */
 	restrictinfo->parent_ec = NULL;
+
+	restrictinfo->can_batch = false;
 
 	restrictinfo->eval_cost.startup = -1;
 	restrictinfo->norm_selec = -1;

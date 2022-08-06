@@ -410,6 +410,8 @@ static void get_rule_windowspec(WindowClause *wc, List *targetList,
 					deparse_context *context);
 static char *get_variable(Var *var, int levelsup, bool istoplevel,
 			 deparse_context *context);
+static void get_batched_variable(BatchedVar *var, int levelsup, bool istoplevel,
+			 deparse_context *context);
 static void get_special_variable(Node *node, deparse_context *context,
 					 void *private);
 static void resolve_special_varno(Node *node, deparse_context *context,
@@ -6865,6 +6867,13 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 	return attname;
 }
 
+static void
+get_batched_variable(BatchedVar *bvar, int levelsup, bool istoplevel, deparse_context *context)
+{
+	(void ) get_variable(bvar->orig_var, levelsup, istoplevel, context);
+	appendStringInfo(context->buf, ".%d", bvar->serial_no);
+}
+
 /*
  * Deparse a Var which references OUTER_VAR, INNER_VAR, or INDEX_VAR.  This
  * routine is actually a callback for get_special_varno, which handles finding
@@ -7572,6 +7581,7 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 	switch (nodeTag(node))
 	{
 		case T_Var:
+		case T_BatchedVar:
 		case T_Const:
 		case T_Param:
 		case T_CoerceToDomainValue:
@@ -7909,6 +7919,10 @@ get_rule_expr(Node *node, deparse_context *context,
 	{
 		case T_Var:
 			(void) get_variable((Var *) node, 0, false, context);
+			break;
+		
+		case T_BatchedVar:
+			get_batched_variable((BatchedVar *) node, 0, false, context);
 			break;
 
 		case T_Const:

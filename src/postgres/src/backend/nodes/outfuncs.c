@@ -1211,6 +1211,14 @@ _outVar(StringInfo str, const Var *node)
 }
 
 static void
+_outBatchedVar(StringInfo str, const BatchedVar *node)
+{
+	WRITE_NODE_TYPE("BATCHEDVAR");
+	_outVar(str, node->orig_var);
+	WRITE_INT_FIELD(serial_no);
+}
+
+static void
 _outConst(StringInfo str, const Const *node)
 {
 	WRITE_NODE_TYPE("CONST");
@@ -2577,6 +2585,7 @@ _outRestrictInfo(StringInfo str, const RestrictInfo *node)
 	WRITE_BOOL_FIELD(is_pushed_down);
 	WRITE_BOOL_FIELD(outerjoin_delayed);
 	WRITE_BOOL_FIELD(can_join);
+	WRITE_BOOL_FIELD(can_batch);
 	WRITE_BOOL_FIELD(pseudoconstant);
 	WRITE_BOOL_FIELD(leakproof);
 	WRITE_UINT_FIELD(security_level);
@@ -3950,6 +3959,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_Var:
 				_outVar(str, obj);
+				break;
+			case T_BatchedVar:
+				_outBatchedVar(str, obj);
 				break;
 			case T_Const:
 				_outConst(str, obj);

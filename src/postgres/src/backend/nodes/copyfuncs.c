@@ -2300,6 +2300,7 @@ _copyRestrictInfo(const RestrictInfo *from)
 	COPY_SCALAR_FIELD(is_pushed_down);
 	COPY_SCALAR_FIELD(outerjoin_delayed);
 	COPY_SCALAR_FIELD(can_join);
+	COPY_SCALAR_FIELD(can_batch);
 	COPY_SCALAR_FIELD(pseudoconstant);
 	COPY_SCALAR_FIELD(leakproof);
 	COPY_SCALAR_FIELD(security_level);

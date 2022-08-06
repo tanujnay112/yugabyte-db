@@ -21,10 +21,10 @@ extern Param *replace_outer_placeholdervar(PlannerInfo *root,
 extern Param *replace_outer_agg(PlannerInfo *root, Aggref *agg);
 extern Param *replace_outer_grouping(PlannerInfo *root, GroupingFunc *grp);
 extern Param *replace_nestloop_param_var(PlannerInfo *root, Var *var);
+extern Param *
+replace_nestloop_batched_param_var(PlannerInfo *root, BatchedVar *bvar);
 extern Param *replace_nestloop_param_placeholdervar(PlannerInfo *root,
 									  PlaceHolderVar *phv);
-extern List *
-batch_nestloop_param(PlannerInfo *root, Param *param);
 extern void process_subquery_nestloop_params(PlannerInfo *root,
 								 List *subplan_params);
 extern List *identify_current_nestloop_params(PlannerInfo *root,

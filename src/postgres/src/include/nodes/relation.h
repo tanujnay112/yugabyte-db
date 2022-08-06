@@ -646,6 +646,7 @@ typedef struct RelOptInfo
 	struct Path *cheapest_total_path;
 	struct Path *cheapest_unique_path;
 	List	   *cheapest_parameterized_paths;
+	List 	   *cheapest_batched_parameterized_paths;
 
 	/* parameterization information needed for both base rels and join rels */
 	/* (see also lateral_vars and lateral_referencers) */
@@ -1910,6 +1911,8 @@ typedef struct RestrictInfo
 	bool		leakproof;		/* true if known to contain no leaked Vars */
 
 	bool		yb_pushable;	/* true if can be pushed down to DocDB */
+
+	bool		can_batch;
 
 	Index		security_level; /* see comment above */
 

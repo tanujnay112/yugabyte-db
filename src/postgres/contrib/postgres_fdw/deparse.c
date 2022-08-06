@@ -147,6 +147,7 @@ static void deparseColumnRef(StringInfo buf, int varno, int varattno,
 static void deparseRelation(StringInfo buf, Relation rel);
 static void deparseExpr(Expr *expr, deparse_expr_cxt *context);
 static void deparseVar(Var *node, deparse_expr_cxt *context);
+static void deparseBatchedVar(BatchedVar *node, deparse_expr_cxt *context);
 static void deparseConst(Const *node, deparse_expr_cxt *context, int showtype);
 static void deparseParam(Param *node, deparse_expr_cxt *context);
 static void deparseArrayRef(ArrayRef *node, deparse_expr_cxt *context);
@@ -2269,6 +2270,9 @@ deparseExpr(Expr *node, deparse_expr_cxt *context)
 		case T_Var:
 			deparseVar((Var *) node, context);
 			break;
+		case T_BatchedVar:
+			deparseBatchedVar((BatchedVar *) node, context);
+			break;
 		case T_Const:
 			deparseConst((Const *) node, context, 0);
 			break;
@@ -2376,6 +2380,13 @@ deparseVar(Var *node, deparse_expr_cxt *context)
 			printRemotePlaceholder(node->vartype, node->vartypmod, context);
 		}
 	}
+}
+
+static void
+deparseBatchedVar(BatchedVar *node, deparse_expr_cxt *context)
+{
+	deparseVar(node->orig_var, context);
+	appendStringInfo(context->buf, ".%d", node->serial_no);
 }
 
 /*

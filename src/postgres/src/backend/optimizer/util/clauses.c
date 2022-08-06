@@ -1566,6 +1566,7 @@ contain_leaked_vars_walker(Node *node, void *context)
 	switch (nodeTag(node))
 	{
 		case T_Var:
+		case T_BatchedVar:
 		case T_Const:
 		case T_Param:
 		case T_ArrayRef:
