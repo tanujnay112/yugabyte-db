@@ -581,86 +581,6 @@ consider_index_join_outer_rels(PlannerInfo *root, RelOptInfo *rel,
 	}
 }
 
-static RestrictInfo *batch_clause(RestrictInfo *rinfo,
-								  IndexOptInfo *index,
-								  size_t indexcol,
-								  RestrictInfo *cumulative)
-{
-	(void) cumulative;
-	Expr *expr = rinfo->clause;
-	if (IsA(expr, OpExpr))
-	{
-		OpExpr *opexpr = (OpExpr *) expr;
-		int strategy =
-			get_op_opfamily_strategy(opexpr->opno, index->opfamily[indexcol]);
-		Assert(strategy != 0);
-		if (strategy == BTEqualStrategyNumber
-			&& (IsA(lsecond(opexpr->args), Var)
-			&& IsA(linitial(opexpr->args), Var)))
-		{
-			Var *outer;
-			Var *inner;
-			if (rinfo->outer_is_left)
-			{
-				outer = (Var *) linitial(opexpr->args);
-				inner = (Var *) lsecond(opexpr->args);
-			}
-			else
-			{
-				outer = (Var *) lsecond(opexpr->args);
-				inner = (Var *) linitial(opexpr->args);
-			}
-			// TODO make BatchedVar node
-			ScalarArrayOpExpr *saop = makeNode(ScalarArrayOpExpr);
-			saop->opno = opexpr->opno;
-			saop->opfuncid = opexpr->opfuncid;
-			saop->useOr = true;
-
-			Var *firstVar = outer;
-
-			ArrayExpr *arrexpr = makeNode(ArrayExpr);
-			Oid scalar_type = firstVar->vartype;
-			Oid array_type;
-			if (OidIsValid(scalar_type) && scalar_type != RECORDOID)
-				array_type = get_array_type(scalar_type);
-			else
-				array_type = InvalidOid;
-
-			arrexpr->array_typeid = array_type;
-			arrexpr->element_typeid = scalar_type;
-			arrexpr->multidims = false;
-			arrexpr->array_collid = firstVar->varcollid;
-			arrexpr->elements = lappend(NIL, firstVar);
-			for (size_t b = 1; b < yb_bnl_batch_size; b++)
-			{
-				BatchedVar *bvar = makeNode(BatchedVar);
-				bvar->orig_var = copyObject(firstVar);
-				bvar->serial_no = b;
-				arrexpr->elements = lappend(arrexpr->elements, bvar);
-			}
-			
-
-			List *saopargs = NIL;
-			saopargs = lappend(saopargs, copyObject(inner));
-			saopargs = lappend(saopargs, arrexpr);
-
-			saop->args = saopargs;
-			saop->inputcollid = outer->varcollid;
-			saop->location = -1;
-			RestrictInfo *ret =  make_restrictinfo((Expr*) saop,
-									 rinfo->is_pushed_down,
-									 rinfo->outerjoin_delayed, false,
-									 rinfo->security_level,
-									 rinfo->required_relids,
-									 rinfo->outer_relids,
-									 rinfo->nullable_relids);
-			ret->parent_ec = rinfo->parent_ec;
-			return ret;
-		}
-	}
-	return NULL;
-}
-
 static void
 yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
 						   IndexOptInfo *index, IndexClauseSet *clauses,
@@ -672,42 +592,76 @@ yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	ListCell   *lc;
 
 	Relids batchedrelids = NULL;
-	IndexClauseSet batchedclauses;
-	memset(&batchedclauses, 0, sizeof(IndexClauseSet));
-	bool nonempty = false;
-	for (size_t i = 0; i < INDEX_MAX_KEYS; i++)
+	Relids unbatchablerelids = NULL;
+
+	Relids batched_inner_attnos = NULL;
+
+	List *batched_rinfos = NIL;
+
+
+	for (size_t i = 0; i < INDEX_MAX_KEYS && clauses->nonempty; i++)
 	{
 		List *colclauses = clauses->indexclauses[i];
 		foreach (lc, colclauses)
 		{
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-			// if we can batch up outer vars in rinfo then do so
-			RestrictInfo *batched = batch_clause(rinfo, index, i, NULL);
-			nonempty = true;
 
-			if (batched != NULL)
+			/*
+			 * If we can batch up outer vars in rinfo then do so.
+			 * We are prohibiting batching outer rels that have already
+			 * been batched in the interest of simplicity for now.
+			 */
+			Relids inner_relids = bms_make_singleton(index->rel->relid);
+			Relids outer_relids =
+				bms_difference(rinfo->required_relids, inner_relids);
+			RestrictInfo *tmp_batched = get_batched_restrictinfo(rinfo, outer_relids, inner_relids);
+
+			/* Disabling batching the same rel twice for now. */
+			if (tmp_batched &&
+				bms_overlap(tmp_batched->right_relids, batchedrelids))
+				tmp_batched = NULL;
+			
+			/* Disabling batching the same inner attno twice for now. */
+			if (tmp_batched)
 			{
-				batchedclauses.indexclauses[i] =
-					lappend(batchedclauses.indexclauses[i], batched);
-			batchedrelids = bms_union(batchedrelids,
-					rinfo->outer_is_left ? rinfo->left_relids
-										 : rinfo->right_relids);
-				rinfo->can_batch = true;
+				Bitmapset *attnos = NULL;
+				Node *innervar = get_leftop(tmp_batched->clause);
+				pull_varattnos(innervar,
+							   index->rel->relid,
+							   &attnos);
+				if (bms_overlap(batched_inner_attnos, attnos))
+					tmp_batched = NULL;
+				bms_free(attnos);
+			}
+
+			if (tmp_batched != NULL)
+			{
+				batchedrelids =
+					bms_union(batchedrelids,
+							  tmp_batched->right_relids);
+				batched_rinfos = lappend(batched_rinfos, rinfo);
+
+				Node *innervar = get_leftop(tmp_batched->clause);
+				pull_varattnos(innervar,
+							   index->rel->relid,
+							   &batched_inner_attnos);
 			}
 			else
 			{
-				rinfo->can_batch = false;
-				// if it contains outer rel then we don't add it
-				if (bms_is_empty(rinfo->outer_relids))
-				{
-					batchedclauses.indexclauses[i] =
-						lappend(batchedclauses.indexclauses[i], rinfo);
-				}
+				/* 
+				 * Couldn't batch this clause so its outer rels are not
+				 * batchable.
+				 */
+				unbatchablerelids = bms_union(unbatchablerelids,
+											  rinfo->clause_relids);
 			}
 		}
 	}
 
-	batchedclauses.nonempty = nonempty;
+	batchedrelids = bms_del_member(batchedrelids,
+								   index->rel->relid);
+	unbatchablerelids = bms_del_member(unbatchablerelids,
+									   index->rel->relid);
 
 	/*
 	 * Build simple index paths using the clauses.  Allow ScalarArrayOpExpr
@@ -716,7 +670,7 @@ yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * paths if possible).
 	 */
 	indexpaths = build_index_paths(root, rel,
-								   index, &batchedclauses,
+								   index, clauses,
 								   index->predOK,
 								   ST_ANYSCAN,
 								   &skip_nonnative_saop,
@@ -724,14 +678,14 @@ yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
 
 	/*
 	 * If we skipped any lower-order ScalarArrayOpExprs on an index with an AM
-	 * that supports them, then try again including those clauses.  This will
+	 * that supports them, then try again including those clauses. This will
 	 * produce paths with more selectivity but no ordering.
 	 */
 	if (skip_lower_saop)
 	{
 		indexpaths = list_concat(indexpaths,
 								 build_index_paths(root, rel,
-												   index, &batchedclauses,
+												   index, clauses,
 												   index->predOK,
 												   ST_ANYSCAN,
 												   &skip_nonnative_saop,
@@ -753,7 +707,52 @@ yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	foreach(lc, indexpaths)
 	{
 		IndexPath  *ipath = (IndexPath *) lfirst(lc);
-		ipath->path.param_info->yb_ppi_req_outer_batched = batchedrelids;
+		ParamPathInfo *param_info = ipath->path.param_info;
+
+		if (param_info)
+		{
+			ListCell *lc2;
+			/* See if we have any unbatchable filters. */
+			foreach(lc2, param_info->ppi_clauses)
+			{
+				RestrictInfo *rinfo = lfirst(lc2);
+				RestrictInfo *batched =
+					get_batched_restrictinfo(rinfo,
+											 rinfo->required_relids,  index->rel->relids);
+				
+				/* See if we have already batched this filter. */
+				Relids left_var_attnos = NULL;
+				if (!batched ||
+					!bms_equal(batched->left_relids, index->rel->relids) ||
+					!bms_is_subset(batched->right_relids, batchedrelids))
+				{
+					unbatchablerelids = bms_union(unbatchablerelids,
+												  rinfo->clause_relids);
+				}
+
+				if (batched &&
+					bms_equal(batched->left_relids, index->rel->relids) &&
+					bms_is_subset(batched->right_relids, batchedrelids))
+				{
+					pull_varattnos(get_leftop(batched->clause),
+								   index->rel->relid,
+								   &left_var_attnos);
+					if (!bms_is_subset(left_var_attnos, batched_inner_attnos))
+						unbatchablerelids = bms_union(unbatchablerelids,
+												  	  rinfo->clause_relids);
+				}
+				bms_free(left_var_attnos);
+			}
+
+			unbatchablerelids = bms_del_member(unbatchablerelids,
+											   index->rel->relid);
+
+			batchedrelids = bms_difference(batchedrelids, unbatchablerelids);
+			/* Add batching info. */
+			param_info->yb_ppi_req_outer_batched = batchedrelids;
+			param_info->yb_ppi_req_outer_unbatched = unbatchablerelids;
+
+		}
 
 		if (index->amhasgettuple)
 			add_path(rel, (Path *) ipath);
@@ -762,22 +761,6 @@ yb_get_batched_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			(ipath->path.pathkeys == NIL ||
 			 ipath->indexselectivity < 1.0))
 			*bitindexpaths = lappend(*bitindexpaths, ipath);
-	}
-
-	/*
-	 * If there were ScalarArrayOpExpr clauses that the index can't handle
-	 * natively, generate bitmap scan paths relying on executor-managed
-	 * ScalarArrayOpExpr.
-	 */
-	if (skip_nonnative_saop)
-	{
-		indexpaths = build_index_paths(root, rel,
-									   index, clauses,
-									   false,
-									   ST_BITMAPSCAN,
-									   NULL,
-									   NULL);
-		*bitindexpaths = list_concat(*bitindexpaths, indexpaths);
 	}
 }
 
@@ -863,11 +846,9 @@ get_join_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	{
 		yb_get_batched_index_paths(root, rel, index, &clauseset, bitindexpaths);
 	}
-	else
-	{
-		/* Build index path(s) using the collected set of clauses */
-		get_index_paths(root, rel, index, &clauseset, bitindexpaths);
-	}
+
+	/* Build index path(s) using the collected set of clauses */
+	get_index_paths(root, rel, index, &clauseset, bitindexpaths);
 
 	/*
 	 * Remember we considered paths for this set of relids.  We use lcons not
@@ -875,7 +856,6 @@ get_join_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	*considered_relids = lcons(relids, *considered_relids);
 }
-
 
 /*
  * eclass_already_used
@@ -3043,10 +3023,8 @@ check_index_predicates(PlannerInfo *root, RelOptInfo *rel)
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
 		/* Check if clause can be moved to this rel */
-		// modify here?
 		if (!join_clause_is_movable_to(rinfo, rel))
 			continue;
-
 
 		clauselist = lappend(clauselist, rinfo);
 	}
@@ -3063,7 +3041,6 @@ check_index_predicates(PlannerInfo *root, RelOptInfo *rel)
 	else
 		otherrels = bms_difference(root->all_baserels, rel->relids);
 
-	// and here?
 	if (!bms_is_empty(otherrels))
 		clauselist =
 			list_concat(clauselist,
@@ -3517,11 +3494,16 @@ match_index_to_operand(Node *operand,
 			}
 		}
 		/*
-		 * Simple index column; operand must be a matching Var.
+		 * Simple index column; operand must be a matching Var
 		 */
-		if (operand && IsA(operand, Var) &&
-			index->rel->relid == ((Var *) operand)->varno &&
-			indkey == ((Var *) operand)->varattno)
+		
+		Var *operand_var = NULL;
+		if (operand && IsA(operand, Var))
+			operand_var = (Var *) operand;
+
+		if (operand_var &&
+			index->rel->relid == operand_var->varno &&
+			indkey == operand_var->varattno)
 			return true;
 	}
 	else

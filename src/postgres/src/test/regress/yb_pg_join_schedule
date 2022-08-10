@@ -5,13 +5,8 @@
 ####################################################################################################
 # Dependencies for `yb_pg_join`
 test: yb_pg_text
-<<<<<<< HEAD
 test: yb_pg_int2
 test: yb_pg_int4
-=======
-test: yb_pg_int4
-test: yb_pg_int2
->>>>>>> 9c84764340 (bug in tuplestore codepath)
 test: yb_pg_int8
 test: yb_pg_float8
 
@@ -24,6 +19,6 @@ test: yb_pg_create_type
 test: yb_pg_create_table
 test: yb_pg_copy
 
-#test: yb_pg_join
+test: yb_pg_join
 
-test: yb_pg_join_batching
+test: yb_join_batching

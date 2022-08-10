@@ -885,12 +885,12 @@ _copyNestLoop(const NestLoop *from)
 }
 
 /*
- * _copyBatchedNestLoop
+ * _copyYbBatchedNestLoop
  */
-static BatchedNestLoop *
-_copyBatchedNestLoop(const BatchedNestLoop *from)
+static YbBatchedNestLoop *
+_copyYbBatchedNestLoop(const YbBatchedNestLoop *from)
 {
-	BatchedNestLoop   *newnode = makeNode(BatchedNestLoop);
+	YbBatchedNestLoop   *newnode = makeNode(YbBatchedNestLoop);
 
 	/*
 	 * copy NestLoop field
@@ -901,6 +901,7 @@ _copyBatchedNestLoop(const BatchedNestLoop *from)
 	 * copy remainder of node
 	 */
 	COPY_NODE_FIELD(innerHashAttNos);
+	COPY_NODE_FIELD(outerParamNos);
 	COPY_NODE_FIELD(hashOps);
 
 	return newnode;
@@ -1207,6 +1208,7 @@ _copyNestLoopParam(const NestLoopParam *from)
 
 	COPY_SCALAR_FIELD(paramno);
 	COPY_NODE_FIELD(paramval);
+	COPY_SCALAR_FIELD(yb_batch_size);
 
 	return newnode;
 }
@@ -2300,7 +2302,6 @@ _copyRestrictInfo(const RestrictInfo *from)
 	COPY_SCALAR_FIELD(is_pushed_down);
 	COPY_SCALAR_FIELD(outerjoin_delayed);
 	COPY_SCALAR_FIELD(can_join);
-	COPY_SCALAR_FIELD(can_batch);
 	COPY_SCALAR_FIELD(pseudoconstant);
 	COPY_SCALAR_FIELD(leakproof);
 	COPY_SCALAR_FIELD(security_level);
@@ -5021,8 +5022,8 @@ copyObjectImpl(const void *from)
 		case T_NestLoop:
 			retval = _copyNestLoop(from);
 			break;
-		case T_BatchedNestLoop:
-			retval = _copyBatchedNestLoop(from);
+		case T_YbBatchedNestLoop:
+			retval = _copyYbBatchedNestLoop(from);
 			break;
 		case T_MergeJoin:
 			retval = _copyMergeJoin(from);

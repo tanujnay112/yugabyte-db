@@ -769,13 +769,14 @@ _outNestLoop(StringInfo str, const NestLoop *node)
 }
 
 static void
-_outBatchedNestLoop(StringInfo str, const BatchedNestLoop *node)
+_outYbBatchedNestLoop(StringInfo str, const YbBatchedNestLoop *node)
 {
-	WRITE_NODE_TYPE("BATCHEDNESTLOOP");
+	WRITE_NODE_TYPE("YbBatchedNestLoop");
 
 	_outNestLoop(str, &node->nl);
 	WRITE_NODE_FIELD(hashOps);
 	WRITE_NODE_FIELD(innerHashAttNos);
+	WRITE_NODE_FIELD(outerParamNos);
 }
 
 static void
@@ -1211,11 +1212,10 @@ _outVar(StringInfo str, const Var *node)
 }
 
 static void
-_outBatchedVar(StringInfo str, const BatchedVar *node)
+_outYbBatchedExpr(StringInfo str, const YbBatchedExpr *node)
 {
-	WRITE_NODE_TYPE("BATCHEDVAR");
-	_outVar(str, node->orig_var);
-	WRITE_INT_FIELD(serial_no);
+	WRITE_NODE_TYPE("BATCHEDEXPR");
+	outNode(str, node->orig_expr);
 }
 
 static void
@@ -2585,7 +2585,6 @@ _outRestrictInfo(StringInfo str, const RestrictInfo *node)
 	WRITE_BOOL_FIELD(is_pushed_down);
 	WRITE_BOOL_FIELD(outerjoin_delayed);
 	WRITE_BOOL_FIELD(can_join);
-	WRITE_BOOL_FIELD(can_batch);
 	WRITE_BOOL_FIELD(pseudoconstant);
 	WRITE_BOOL_FIELD(leakproof);
 	WRITE_UINT_FIELD(security_level);
@@ -3885,8 +3884,8 @@ outNode(StringInfo str, const void *obj)
 			case T_NestLoop:
 				_outNestLoop(str, obj);
 				break;
-			case T_BatchedNestLoop:
-				_outBatchedNestLoop(str, obj);
+			case T_YbBatchedNestLoop:
+				_outYbBatchedNestLoop(str, obj);
 				break;
 			case T_MergeJoin:
 				_outMergeJoin(str, obj);
@@ -3960,8 +3959,8 @@ outNode(StringInfo str, const void *obj)
 			case T_Var:
 				_outVar(str, obj);
 				break;
-			case T_BatchedVar:
-				_outBatchedVar(str, obj);
+			case T_YbBatchedExpr:
+				_outYbBatchedExpr(str, obj);
 				break;
 			case T_Const:
 				_outConst(str, obj);

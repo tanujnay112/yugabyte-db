@@ -1468,8 +1468,6 @@ match_unsorted_outer(PlannerInfo *root,
 			 */
 			ListCell   *lc2;
 			List *param_paths = innerrel->cheapest_parameterized_paths;
-			if (list_length(innerrel->cheapest_batched_parameterized_paths) > 0)
-				param_paths = innerrel->cheapest_batched_parameterized_paths;
 
 			foreach(lc2, param_paths)
 			{

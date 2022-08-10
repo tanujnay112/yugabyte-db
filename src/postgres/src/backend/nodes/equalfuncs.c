@@ -175,11 +175,9 @@ _equalVar(const Var *a, const Var *b)
 }
 
 static bool
-_equalBatchedVar(const BatchedVar *a, const BatchedVar *b)
+_equalYbBatchedExpr(const YbBatchedExpr *a, const YbBatchedExpr *b)
 {
-	COMPARE_NODE_FIELD(orig_var);
-	COMPARE_SCALAR_FIELD(serial_no);
-
+	COMPARE_NODE_FIELD(orig_expr);
 	return true;
 }
 
@@ -3084,8 +3082,8 @@ equal(const void *a, const void *b)
 		case T_Var:
 			retval = _equalVar(a, b);
 			break;
-		case T_BatchedVar:
-			retval = _equalBatchedVar(a, b);
+		case T_YbBatchedExpr:
+			retval = _equalYbBatchedExpr(a, b);
 			break;
 		case T_Const:
 			retval = _equalConst(a, b);

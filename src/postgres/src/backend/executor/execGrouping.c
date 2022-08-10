@@ -89,7 +89,6 @@ execTuplesMatchPrepare(TupleDesc desc,
  * hash functions associated with the equality operators.  *eqFunctions and
  * *hashFunctions receive the palloc'd result arrays.
  *
- * Note: we expect that the given operators are not cross-type comparisons.
  */
 void
 execTuplesHashPrepare(int numCols,
@@ -357,16 +356,10 @@ FindTupleHashEntry(TupleHashTable hashtable, TupleTableSlot *slot,
 	hashtable->in_keyColIdx = keyColIdx;
 	hashtable->cur_eq_func = eqcomp;
 
-	int oldNumCols = hashtable->numCols;
-	AttrNumber *oldKeyColIdx = hashtable->keyColIdx;
-
 	/* Search the hash table */
 	key = NULL;					/* flag to reference inputslot */
 	entry = tuplehash_lookup(hashtable->hashtab, key);
 	MemoryContextSwitchTo(oldContext);
-
-	hashtable->numCols = oldNumCols;
-	hashtable->keyColIdx = oldKeyColIdx;
 
 	return entry;
 }
@@ -456,7 +449,6 @@ TupleHashTableMatch(struct tuplehash_hash *tb, const MinimalTuple tuple1, const 
 	TupleTableSlot *slot1;
 	TupleTableSlot *slot2;
 	TupleHashTable hashtable = (TupleHashTable) tb->private_data;
-
 	ExprContext *econtext = hashtable->exprcontext;
 
 	/*

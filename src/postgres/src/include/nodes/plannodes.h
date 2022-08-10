@@ -745,7 +745,7 @@ typedef struct NestLoop
 	List	   *nestParams;		/* list of NestLoopParam nodes */
 } NestLoop;
 
-typedef struct BatchedNestLoop
+typedef struct YbBatchedNestLoop
 {
 	NestLoop nl;
 
@@ -757,16 +757,17 @@ typedef struct BatchedNestLoop
 	List	   *innerHashAttNos; /* List of attributes of inner tuple that
 									are to be hashed if we are using the hash
 									strategy. */
-} BatchedNestLoop;
+	List	   *outerParamNos; /* List of attributes of outer tuple that
+									are to be hashed if we are using the hash
+									strategy. */
+} YbBatchedNestLoop;
 
 typedef struct NestLoopParam
 {
 	NodeTag		type;
 	int			paramno;		/* number of the PARAM_EXEC Param to set */
 	Var		   *paramval;		/* outer-relation Var to assign to Param */
-	List	   *batchedparams;	/* List of ints (paramnos). These denote extra 
-								   parameters that are introduced to enable
-								   batching for this parameter. */
+	int	   		yb_batch_size;	/* Batch size of this param. */
 } NestLoopParam;
 
 /* ----------------

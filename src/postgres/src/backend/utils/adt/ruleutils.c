@@ -410,8 +410,9 @@ static void get_rule_windowspec(WindowClause *wc, List *targetList,
 					deparse_context *context);
 static char *get_variable(Var *var, int levelsup, bool istoplevel,
 			 deparse_context *context);
-static void get_batched_variable(BatchedVar *var, int levelsup, bool istoplevel,
-			 deparse_context *context);
+static void get_batched_expr(YbBatchedExpr *var,
+							 deparse_context *context,
+							 bool showimplicit);
 static void get_special_variable(Node *node, deparse_context *context,
 					 void *private);
 static void resolve_special_varno(Node *node, deparse_context *context,
@@ -6868,10 +6869,13 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 }
 
 static void
-get_batched_variable(BatchedVar *bvar, int levelsup, bool istoplevel, deparse_context *context)
+get_batched_expr(YbBatchedExpr *bexpr,
+				 deparse_context *context,
+				 bool showimplicit)
 {
-	(void ) get_variable(bvar->orig_var, levelsup, istoplevel, context);
-	appendStringInfo(context->buf, ".%d", bvar->serial_no);
+	appendStringInfo(context->buf, "BATCHED EXPR(");
+	(void ) get_rule_expr((Node *) bexpr->orig_expr, context, showimplicit);
+	appendStringInfo(context->buf, ")");
 }
 
 /*
@@ -7393,7 +7397,8 @@ find_param_referent(Param *param, deparse_context *context,
 			 * we've crawled up out of a subplan, this couldn't possibly be
 			 * the right match.
 			 */
-			if (IsA(ps, NestLoopState) &&
+			if ((IsA(ps, NestLoopState) || 
+				 IsA(ps, YbBatchedNestLoopState)) &&
 				child_ps == innerPlanState(ps) &&
 				in_same_plan_level)
 			{
@@ -7581,7 +7586,6 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 	switch (nodeTag(node))
 	{
 		case T_Var:
-		case T_BatchedVar:
 		case T_Const:
 		case T_Param:
 		case T_CoerceToDomainValue:
@@ -7624,7 +7628,10 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 			 * treat like FieldSelect (probably doesn't matter)
 			 */
 			return (IsA(parentNode, FieldStore) ? false : true);
-
+		case T_YbBatchedExpr:
+			return isSimpleNode((Node *) ((YbBatchedExpr *) node)->orig_expr,
+								parentNode,
+								prettyFlags);
 		case T_CoerceToDomain:
 			/* maybe simple, check args */
 			return isSimpleNode((Node *) ((CoerceToDomain *) node)->arg,
@@ -7920,10 +7927,6 @@ get_rule_expr(Node *node, deparse_context *context,
 		case T_Var:
 			(void) get_variable((Var *) node, 0, false, context);
 			break;
-		
-		case T_BatchedVar:
-			get_batched_variable((BatchedVar *) node, 0, false, context);
-			break;
 
 		case T_Const:
 			get_const_expr((Const *) node, context, 0);
@@ -7949,6 +7952,10 @@ get_rule_expr(Node *node, deparse_context *context,
 
 		case T_WindowFunc:
 			get_windowfunc_expr((WindowFunc *) node, context);
+			break;
+
+		case T_YbBatchedExpr:
+			get_batched_expr((YbBatchedExpr *) node, context, showimplicit);
 			break;
 
 		case T_ArrayRef:

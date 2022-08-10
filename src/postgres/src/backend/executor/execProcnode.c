@@ -97,7 +97,6 @@
 #include "executor/nodeMergejoin.h"
 #include "executor/nodeModifyTable.h"
 #include "executor/nodeNamedtuplestorescan.h"
-#include "executor/nodeBatchedNestloop.h"
 #include "executor/nodeNestloop.h"
 #include "executor/nodeProjectSet.h"
 #include "executor/nodeRecursiveunion.h"
@@ -114,6 +113,7 @@
 #include "executor/nodeValuesscan.h"
 #include "executor/nodeWindowAgg.h"
 #include "executor/nodeWorktablescan.h"
+#include "executor/nodeYbBatchedNestloop.h"
 #include "executor/nodeYbSeqscan.h"
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
@@ -299,9 +299,9 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													estate, eflags);
 			break;
 
-		case T_BatchedNestLoop:
-			result = (PlanState *) ExecInitBatchedNestLoop(
-				(BatchedNestLoop *) node,
+		case T_YbBatchedNestLoop:
+			result = (PlanState *) ExecInitYbBatchedNestLoop(
+				(YbBatchedNestLoop *) node,
 				estate, eflags);
 			break;
 
@@ -693,8 +693,8 @@ ExecEndNode(PlanState *node)
 			ExecEndNestLoop((NestLoopState *) node);
 			break;
 
-		case T_BatchedNestLoopState:
-			ExecEndBatchedNestLoop((BatchedNestLoopState *) node);
+		case T_YbBatchedNestLoopState:
+			ExecEndYbBatchedNestLoop((YbBatchedNestLoopState *) node);
 			break;
 
 		case T_MergeJoinState:

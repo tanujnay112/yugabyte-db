@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * nodeBatchedNestloop.h
+ * nodeYbBatchedNestLoop.h
  *	  Implementation of Yugabyte's batched nested loop join.
  *
  * Copyright (c) YugaByte, Inc.
@@ -15,19 +15,19 @@
  * or implied.  See the License for the specific language governing permissions and limitations
  * under the License.
  *
- * src/postgres/src/include/executor/nodeBatchedNestloop.h
+ * src/postgres/src/include/executor/nodeYbBatchedNestLoop.h
  *
  *-------------------------------------------------------------------------
  */
  
-#ifndef NODEBATCHEDNESTLOOP_H
-#define NODEBATCHEDNESTLOOP_H
+#ifndef NODEYBBATCHEDNESTLOOP_H
+#define NODEYBBATCHEDNESTLOOP_H
 
 #include "nodes/execnodes.h"
 
 
-extern BatchedNestLoopState *ExecInitBatchedNestLoop(BatchedNestLoop *node, EState *estate, int eflags);
-extern void ExecEndBatchedNestLoop(BatchedNestLoopState *node);
-extern void ExecReScanBatchedNestLoop(BatchedNestLoopState *node);
+extern YbBatchedNestLoopState *ExecInitYbBatchedNestLoop(YbBatchedNestLoop *node, EState *estate, int eflags);
+extern void ExecEndYbBatchedNestLoop(YbBatchedNestLoopState *node);
+extern void ExecReScanYbBatchedNestLoop(YbBatchedNestLoopState *node);
 
-#endif							/* NODEBATCHEDNESTLOOP_H */
+#endif							/* NODEYBBATCHEDNESTLOOP_H */

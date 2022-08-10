@@ -1775,7 +1775,7 @@ typedef struct JoinState
 
 /* 
  * Batch state of batched NL Join. These are explained in the comment for
- * ExecBatchedNestLoop in nodeBatchedNestLoop.c.
+ * ExecYbBatchedNestLoop in nodeYbBatchedNestLoop.c.
  */
 typedef enum NLBatchStatus
 {
@@ -1799,21 +1799,21 @@ typedef struct NLBucketInfo
 	List *tuples;	   /* List of BucketTupleInfo in this bucket */
 } NLBucketInfo;
 
-struct BatchedNestLoopState;
+struct YbBatchedNestLoopState;
 
-typedef bool (*FlushTupleFn_t)(struct BatchedNestLoopState *, ExprContext *);
+typedef bool (*FlushTupleFn_t)(struct YbBatchedNestLoopState *, ExprContext *);
 
-typedef bool (*GetNewOuterTupleFn_t)(struct BatchedNestLoopState *node,
+typedef bool (*GetNewOuterTupleFn_t)(struct YbBatchedNestLoopState *node,
 									 ExprContext *econtext);
-typedef void (*ResetBatchFn_t)(struct BatchedNestLoopState *node,
+typedef void (*ResetBatchFn_t)(struct YbBatchedNestLoopState *node,
 							   ExprContext *econtext);
-typedef void (*RegisterOuterMatchFn_t)(struct BatchedNestLoopState *node,
+typedef void (*RegisterOuterMatchFn_t)(struct YbBatchedNestLoopState *node,
 									   ExprContext *econtext);
-typedef void (*AddTupleToOuterBatchFn_t)(struct BatchedNestLoopState *node,
+typedef void (*AddTupleToOuterBatchFn_t)(struct YbBatchedNestLoopState *node,
 										 TupleTableSlot *slot);
 
-typedef void (*FreeBatchFn_t)(struct BatchedNestLoopState *node);
-typedef void (*EndFn_t)(struct BatchedNestLoopState *node);
+typedef void (*FreeBatchFn_t)(struct YbBatchedNestLoopState *node);
+typedef void (*EndFn_t)(struct YbBatchedNestLoopState *node);
 
 /* ----------------
  *	 NestLoopState information
@@ -1830,10 +1830,10 @@ typedef struct NestLoopState
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
 	Tuplestorestate *batchedtuplestorestate;
-	NestLoopStatus nl_currentstatus;
+	NLBatchStatus nl_currentstatus;
 } NestLoopState;
 
-typedef struct BatchedNestLoopState
+typedef struct YbBatchedNestLoopState
 {
 	JoinState	js;				/* its first field is NodeTag */
 	TupleTableSlot *nl_NullInnerTupleSlot;
@@ -1868,7 +1868,7 @@ typedef struct BatchedNestLoopState
 	AddTupleToOuterBatchFn_t AddTupleToOuterBatchImpl;
 	FreeBatchFn_t FreeBatchImpl;
 	EndFn_t EndImpl;
-} BatchedNestLoopState;
+} YbBatchedNestLoopState;
 
 /* ----------------
  *	 MergeJoinState information

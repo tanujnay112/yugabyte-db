@@ -665,12 +665,6 @@ static bool
 YbShouldPushdownScanPrimaryKey(Relation relation, YbScanPlan scan_plan,
                                AttrNumber attnum, ScanKey key)
 {
-	if (IsHashCodeSearch(key->sk_flags))
-	{
-		Assert(is_primary_key);
-		return true;
-	}
-
 	if (YbIsBasicOpSearch(key))
 	{
 		/* Eq strategy for hash key, eq + ineq for range key. */

@@ -1892,12 +1892,11 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 				APP_JUMB(var->varlevelsup);
 			}
 			break;
-		case T_BatchedVar:
+		case T_YbBatchedExpr:
 			{
-				BatchedVar	*bvar = (BatchedVar *) node;
+				YbBatchedExpr	*bexpr = (YbBatchedExpr *) node;
 
-				JumbleExpr(jstate, (Node *) bvar->orig_var);
-				APP_JUMB(bvar->serial_no);
+				JumbleExpr(jstate, (Node *) bexpr->orig_expr);
 			}
 			break;
 		case T_Const:
