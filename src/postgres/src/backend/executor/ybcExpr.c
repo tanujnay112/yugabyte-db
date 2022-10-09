@@ -84,6 +84,13 @@ YBCPgExpr YBCNewConstantVirtual(YBCPgStatement ybc_stmt, Oid type_id, YBCPgDatum
 	return expr;
 }
 
+YBCPgExpr YBCNewTupleExpr(YBCPgStatement ybc_stmt, const YBCPgTypeAttrs *type_attrs, int num_elems, YBCPgExpr *elems) {
+	YBCPgExpr expr = NULL;
+	HandleYBStatus(
+		YBCPgNewTupleExpr(ybc_stmt, type_attrs, num_elems, elems, &expr));
+	return expr;
+}
+
 /*
  * yb_expr_instantiate_params_mutator
  *

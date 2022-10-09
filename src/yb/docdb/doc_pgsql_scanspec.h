@@ -23,6 +23,8 @@
 
 #include "yb/rocksdb/options.h"
 
+#include "yb/util/col_group.h"
+
 namespace yb {
 namespace docdb {
 
@@ -99,6 +101,10 @@ class DocPgsqlScanSpec : public PgsqlScanSpec {
     return range_options_num_cols_;
   }
 
+  const ColGroupHolder range_options_groups() const {
+    return range_options_groups_;
+  }
+
  private:
   static const DocKey& DefaultStartDocKey();
 
@@ -140,6 +146,8 @@ class DocPgsqlScanSpec : public PgsqlScanSpec {
   const std::vector<KeyEntryValue> *hashed_components_;
   // The range_components are owned by the caller of QLScanSpec.
   const std::vector<KeyEntryValue> *range_components_;
+
+  ColGroupHolder range_options_groups_;
 
   // Hash code is used if hashed_components_ vector is empty.
   // hash values are positive int16_t.

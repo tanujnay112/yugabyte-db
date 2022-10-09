@@ -15,6 +15,12 @@ CREATE TABLE p4 (a int, b int, c varchar, primary key(a,b));
 INSERT INTO p4 SELECT i, i % 25, to_char(i, 'FM0000') FROM generate_series(0, 599) i WHERE i % 7 = 0;
 ANALYZE p4;
 
+CREATE TABLE p5 (a int, b int, c varchar, primary key(a asc,b asc));
+INSERT INTO p5 SELECT i / 10, i % 10, to_char(i, 'FM0000') FROM generate_series(0, 599) i;
+CREATE INDEX p5_hash ON p5((a,b) hash);
+CREATE INDEX p5_hash_asc ON p5(a hash, b asc);
+ANALYZE p5;
+
 -- We're testing nested loop join batching in this file
 SET enable_hashjoin = off;
 SET enable_mergejoin = off;
@@ -32,8 +38,18 @@ SELECT * FROM p1 t1 JOIN p2 t2 ON t1.a = t2.a + 1 WHERE t1.a <= 100 AND t2.a <= 
 EXPLAIN (COSTS OFF) SELECT * FROM p1 t1 JOIN p2 t2 ON t1.a - 1 = t2.a + 1 WHERE t1.a <= 100 AND t2.a <= 100;
 SELECT * FROM p1 t1 JOIN p2 t2 ON t1.a - 1 = t2.a + 1 WHERE t1.a <= 100 AND t2.a <= 100;
 
--- Disabling batching for compound clauses
+-- Batching on compound clauses
 /*+ Leading((p2 p1)) */ EXPLAIN (COSTS OFF) SELECT * FROM p1 JOIN p2 ON p1.a = p2.b AND p2.a = p1.b;
+/*+ Leading((p2 p1)) */ SELECT * FROM p1 JOIN p2 ON p1.a = p2.b AND p2.a = p1.b;
+
+explain (costs off) select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+
+/*+IndexScan(p5 p5_hash)*/explain (costs off) select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+/*+IndexScan(p5 p5_hash)*/ select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+
+/*+IndexScan(p5 p5_hash_asc)*/explain (costs off) select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+/*+IndexScan(p5 p5_hash_asc)*/ select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
 
 /*+ Leading((p2 p1)) IndexScan(p1 p1_b_idx) */ EXPLAIN (COSTS OFF) SELECT * FROM p1 JOIN p2 ON p1.a = p2.b AND p2.a = p1.b;
 
@@ -78,6 +94,7 @@ DROP TABLE p1;
 DROP TABLE p2;
 DROP TABLE p3;
 DROP TABLE p4;
+DROP TABLE p5;
 
 -- Test on unhashable join operations. These should use the tuplestore
 -- strategy.

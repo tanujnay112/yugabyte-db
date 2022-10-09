@@ -11,6 +11,11 @@ ANALYZE p3;
 CREATE TABLE p4 (a int, b int, c varchar, primary key(a,b));
 INSERT INTO p4 SELECT i, i % 25, to_char(i, 'FM0000') FROM generate_series(0, 599) i WHERE i % 7 = 0;
 ANALYZE p4;
+CREATE TABLE p5 (a int, b int, c varchar, primary key(a asc,b asc));
+INSERT INTO p5 SELECT i / 10, i % 10, to_char(i, 'FM0000') FROM generate_series(0, 599) i;
+CREATE INDEX p5_hash ON p5((a,b) hash);
+CREATE INDEX p5_hash_asc ON p5(a hash, b asc);
+ANALYZE p5;
 -- We're testing nested loop join batching in this file
 SET enable_hashjoin = off;
 SET enable_mergejoin = off;
@@ -118,24 +123,132 @@ SELECT * FROM p1 t1 JOIN p2 t2 ON t1.a - 1 = t2.a + 1 WHERE t1.a <= 100 AND t2.a
  26 |  1 | 0026 | 24 | 24 | 0024
 (17 rows)
 
--- Disabling batching for compound clauses
+-- Batching on compound clauses
 /*+ Leading((p2 p1)) */ EXPLAIN (COSTS OFF) SELECT * FROM p1 JOIN p2 ON p1.a = p2.b AND p2.a = p1.b;
-                   QUERY PLAN
--------------------------------------------------
- Nested Loop
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ YB Batched Nested Loop Join
+   Join Filter: ((p1.a = p2.b) AND (p1.b = p2.a))
    ->  Seq Scan on p2
    ->  Index Scan using p1_pkey on p1
-         Index Cond: ((a = p2.b) AND (b = p2.a))
-(4 rows)
+         Index Cond: (ROW(a, b) = ANY (ARRAY[ROW(p2.b, p2.a), ROW($1, $4), ROW($2, $5)]))
+(5 rows)
+
+/*+ Leading((p2 p1)) */ SELECT * FROM p1 JOIN p2 ON p1.a = p2.b AND p2.a = p1.b;
+ a  | b  |  c   | a  | b  |  c   
+----+----+------+----+----+------
+ 12 | 12 | 0012 | 12 | 12 | 0012
+  6 |  6 | 0006 |  6 |  6 | 0006
+ 18 | 18 | 0018 | 18 | 18 | 0018
+  0 |  0 | 0000 |  0 |  0 | 0000
+ 24 | 24 | 0024 | 24 | 24 | 0024
+(5 rows)
+
+explain (costs off) select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ YB Batched Nested Loop Left Join
+   Join Filter: (((p1.a - 1) = p5.a) AND ((p1.b - 1) = p5.b))
+   ->  Seq Scan on p1
+         Filter: (a <= 30)
+   ->  Index Scan using p5_pkey on p5
+         Index Cond: (ROW(a, b) = ANY (ARRAY[ROW((p1.a - 1), (p1.b - 1)), ROW(($1 - 1), ($4 - 1)), ROW(($2 - 1), ($5 - 1))]))
+(6 rows)
+
+select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+ a  | b  |  c   | a  | b |  c   
+----+----+------+----+---+------
+  6 |  6 | 0006 |  5 | 5 | 0055
+ 12 | 12 | 0012 |    |   | 
+ 16 | 16 | 0016 |    |   | 
+  4 |  4 | 0004 |  3 | 3 | 0033
+ 10 | 10 | 0010 |  9 | 9 | 0099
+ 18 | 18 | 0018 |    |   | 
+  2 |  2 | 0002 |  1 | 1 | 0011
+ 30 |  5 | 0030 | 29 | 4 | 0294
+  0 |  0 | 0000 |    |   | 
+  8 |  8 | 0008 |  7 | 7 | 0077
+ 22 | 22 | 0022 |    |   | 
+ 14 | 14 | 0014 |    |   | 
+ 26 |  1 | 0026 | 25 | 0 | 0250
+ 28 |  3 | 0028 | 27 | 2 | 0272
+ 24 | 24 | 0024 |    |   | 
+ 20 | 20 | 0020 |    |   | 
+(16 rows)
+
+/*+IndexScan(p5 p5_hash)*/explain (costs off) select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ YB Batched Nested Loop Left Join
+   Join Filter: (((p1.a - 1) = p5.a) AND ((p1.b - 1) = p5.b))
+   ->  Seq Scan on p1
+         Filter: (a <= 30)
+   ->  Index Scan using p5_hash on p5
+         Index Cond: (ROW(a, b) = ANY (ARRAY[ROW((p1.a - 1), (p1.b - 1)), ROW(($1 - 1), ($4 - 1)), ROW(($2 - 1), ($5 - 1))]))
+(6 rows)
+
+/*+IndexScan(p5 p5_hash)*/ select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+ a  | b  |  c   | a  | b |  c   
+----+----+------+----+---+------
+  6 |  6 | 0006 |  5 | 5 | 0055
+ 12 | 12 | 0012 |    |   | 
+ 16 | 16 | 0016 |    |   | 
+  4 |  4 | 0004 |  3 | 3 | 0033
+ 10 | 10 | 0010 |  9 | 9 | 0099
+ 18 | 18 | 0018 |    |   | 
+  2 |  2 | 0002 |  1 | 1 | 0011
+ 30 |  5 | 0030 | 29 | 4 | 0294
+  0 |  0 | 0000 |    |   | 
+  8 |  8 | 0008 |  7 | 7 | 0077
+ 22 | 22 | 0022 |    |   | 
+ 14 | 14 | 0014 |    |   | 
+ 26 |  1 | 0026 | 25 | 0 | 0250
+ 28 |  3 | 0028 | 27 | 2 | 0272
+ 24 | 24 | 0024 |    |   | 
+ 20 | 20 | 0020 |    |   | 
+(16 rows)
+
+/*+IndexScan(p5 p5_hash_asc)*/explain (costs off) select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ YB Batched Nested Loop Left Join
+   Join Filter: (((p1.a - 1) = p5.a) AND ((p1.b - 1) = p5.b))
+   ->  Seq Scan on p1
+         Filter: (a <= 30)
+   ->  Index Scan using p5_hash_asc on p5
+         Index Cond: (ROW(a, b) = ANY (ARRAY[ROW((p1.a - 1), (p1.b - 1)), ROW(($1 - 1), ($4 - 1)), ROW(($2 - 1), ($5 - 1))]))
+(6 rows)
+
+/*+IndexScan(p5 p5_hash_asc)*/ select * from p1 left join p5 on p1.a - 1 = p5.a and p1.b - 1 = p5.b where p1.a <= 30;
+ a  | b  |  c   | a  | b |  c   
+----+----+------+----+---+------
+  6 |  6 | 0006 |  5 | 5 | 0055
+ 12 | 12 | 0012 |    |   | 
+ 16 | 16 | 0016 |    |   | 
+  4 |  4 | 0004 |  3 | 3 | 0033
+ 10 | 10 | 0010 |  9 | 9 | 0099
+ 18 | 18 | 0018 |    |   | 
+  2 |  2 | 0002 |  1 | 1 | 0011
+ 30 |  5 | 0030 | 29 | 4 | 0294
+  0 |  0 | 0000 |    |   | 
+  8 |  8 | 0008 |  7 | 7 | 0077
+ 22 | 22 | 0022 |    |   | 
+ 14 | 14 | 0014 |    |   | 
+ 26 |  1 | 0026 | 25 | 0 | 0250
+ 28 |  3 | 0028 | 27 | 2 | 0272
+ 24 | 24 | 0024 |    |   | 
+ 20 | 20 | 0020 |    |   | 
+(16 rows)
 
 /*+ Leading((p2 p1)) IndexScan(p1 p1_b_idx) */ EXPLAIN (COSTS OFF) SELECT * FROM p1 JOIN p2 ON p1.a = p2.b AND p2.a = p1.b;
-                   QUERY PLAN
--------------------------------------------------
- Nested Loop
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ YB Batched Nested Loop Join
+   Join Filter: ((p1.a = p2.b) AND (p1.b = p2.a))
    ->  Index Scan using p1_b_idx on p1
    ->  Index Scan using p2_pkey on p2
-         Index Cond: ((a = p1.b) AND (b = p1.a))
-(4 rows)
+         Index Cond: (ROW(a, b) = ANY (ARRAY[ROW(p1.b, p1.a), ROW($1, $4), ROW($2, $5)]))
+(5 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM p3 t3 LEFT OUTER JOIN (SELECT t1.a as a FROM p1 t1 JOIN p2 t2 ON t1.a = t2.b WHERE t1.a <= 100 AND t2.a <= 100) s ON t3.a = s.a WHERE t3.a <= 30;
                         QUERY PLAN
@@ -168,7 +281,7 @@ SELECT * FROM p3 t3 LEFT OUTER JOIN (SELECT t1.a as a FROM p1 t1 JOIN p2 t2 ON t
 (8 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM p3 t3 RIGHT OUTER JOIN (SELECT t1.a as a FROM p1 t1 JOIN p2 t2 ON t1.a = t2.b WHERE t1.b <= 10 AND t2.b <= 15) s ON t3.a = s.a;
-                                QUERY PLAN
+                                QUERY PLAN                                 
 ---------------------------------------------------------------------------
  YB Batched Nested Loop Left Join
    Join Filter: (t3.a = t1.a)
@@ -177,7 +290,7 @@ EXPLAIN (COSTS OFF) SELECT * FROM p3 t3 RIGHT OUTER JOIN (SELECT t1.a as a FROM 
          ->  Index Scan using p2_pkey on p2 t2
                Index Cond: (b <= 15)
          ->  Index Scan using p1_pkey on p1 t1
-               Index Cond: ((a = ANY (ARRAY[t2.b, $1, $2])) AND (b <= 10))
+               Index Cond: ((b <= 10) AND (a = ANY (ARRAY[t2.b, $1, $2])))
    ->  Index Scan using p3_pkey on p3 t3
          Index Cond: (a = ANY (ARRAY[t1.a, $4, $5]))
 (10 rows)
@@ -200,39 +313,39 @@ SELECT * FROM p3 t3 RIGHT OUTER JOIN (SELECT t1.a as a FROM p1 t1 JOIN p2 t2 ON 
   0 |  0 | 0000 |  0
     |    |      |  4
     |    |      |  8
-    |    |      |  6
     |    |      |  4
     |    |      |  4
- 10 | 10 | 0010 | 10
- 10 | 10 | 0010 | 10
-    |    |      |  4
-    |    |      |  2
-    |    |      |  8
-    |    |      |  6
-    |    |      |  4
-    |    |      |  2
-    |    |      |  8
-  0 |  0 | 0000 |  0
- 10 | 10 | 0010 | 10
-    |    |      |  6
-  0 |  0 | 0000 |  0
-    |    |      |  4
-    |    |      |  8
-  0 |  0 | 0000 |  0
-  0 |  0 | 0000 |  0
-    |    |      |  2
-    |    |      |  2
-    |    |      |  4
-    |    |      |  8
-    |    |      |  2
-    |    |      |  8
-    |    |      |  6
-  0 |  0 | 0000 |  0
-    |    |      |  8
     |    |      |  6
  10 | 10 | 0010 | 10
+ 10 | 10 | 0010 | 10
+    |    |      |  4
     |    |      |  2
     |    |      |  6
+    |    |      |  8
+    |    |      |  4
+    |    |      |  2
+    |    |      |  8
+  0 |  0 | 0000 |  0
+ 10 | 10 | 0010 | 10
+    |    |      |  6
+  0 |  0 | 0000 |  0
+    |    |      |  4
+    |    |      |  8
+  0 |  0 | 0000 |  0
+  0 |  0 | 0000 |  0
+    |    |      |  2
+    |    |      |  8
+    |    |      |  2
+    |    |      |  4
+    |    |      |  6
+    |    |      |  2
+    |    |      |  8
+  0 |  0 | 0000 |  0
+    |    |      |  8
+    |    |      |  6
+ 10 | 10 | 0010 | 10
+    |    |      |  6
+    |    |      |  2
 (48 rows)
 
 -- anti join--
@@ -250,15 +363,15 @@ EXPLAIN (COSTS OFF) SELECT * FROM p1 t1 WHERE NOT EXISTS (SELECT 1 FROM p2 t2 WH
 SELECT * FROM p1 t1 WHERE NOT EXISTS (SELECT 1 FROM p2 t2 WHERE t1.a = t2.a) AND t1.a <= 40;
  a  | b  |  c
 ----+----+------
- 38 | 13 | 0038
  16 | 16 | 0016
- 40 | 15 | 0040
+ 38 | 13 | 0038
  32 |  7 | 0032
+ 40 | 15 | 0040
  34 |  9 | 0034
  10 | 10 | 0010
   4 |  4 | 0004
-  2 |  2 | 0002
   8 |  8 | 0008
+  2 |  2 | 0002
  22 | 22 | 0022
  14 | 14 | 0014
  20 | 20 | 0020
@@ -281,8 +394,8 @@ SELECT * FROM p1 t1 WHERE NOT EXISTS (SELECT 1 FROM p2 t2 WHERE t1.a = t2.b) AND
  a  | b  |  c
 ----+----+------
  38 | 13 | 0038
- 40 | 15 | 0040
  32 |  7 | 0032
+ 40 | 15 | 0040
  34 |  9 | 0034
  36 | 11 | 0036
  30 |  5 | 0030
@@ -429,6 +542,7 @@ DROP TABLE p1;
 DROP TABLE p2;
 DROP TABLE p3;
 DROP TABLE p4;
+DROP TABLE p5;
 -- Test on unhashable join operations. These should use the tuplestore
 -- strategy.
 SET yb_bnl_batch_size = 3;

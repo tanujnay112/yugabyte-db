@@ -505,6 +505,10 @@ class PgDocReadOp : public PgDocOp {
   // - When an operator is assigned a hash permutation, it is marked as active to be executed.
   // - When an operator completes the execution, it is marked as inactive and available for the
   //   exection of the next hash permutation.
+  LWPgsqlReadRequestPB *PrepareReadReq();
+  void BindPermutation(const std::vector<const LWPgsqlExpressionPB *> &exprs,
+                       LWPgsqlReadRequestPB *read_op);
+  bool GetNextPermutation(std::vector<const LWPgsqlExpressionPB *> *exprs);
   bool PopulateNextHashPermutationOps();
   void InitializeHashPermutationStates();
 
@@ -593,6 +597,8 @@ class PgDocReadOp : public PgDocOp {
   // Example:
   // For a query clause "h1 = 1 AND h2 IN (2,3) AND h3 IN (4,5,6) AND h4 = 7",
   // this will be initialized to [[1], [2, 3], [4, 5, 6], [7]]
+  // For a query clause "(h1,h3) IN ((1,5),(2,3)) AND h2 IN (2,4)"
+  // the will be initialized to [[(1,5), (2,3)], (2,4), []]
   std::vector<std::vector<const LWPgsqlExpressionPB*>> partition_exprs_;
 };
 

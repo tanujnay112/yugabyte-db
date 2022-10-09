@@ -22,6 +22,8 @@
 #include "yb/docdb/docdb_fwd.h"
 #include "yb/docdb/key_bytes.h"
 
+#include "yb/util/col_group.h"
+
 namespace yb {
 namespace docdb {
 
@@ -91,6 +93,10 @@ class DocQLScanSpec : public QLScanSpec {
     return range_options_num_cols_;
   }
 
+  const ColGroupHolder range_options_groups() const {
+    return range_options_groups_;
+  }
+
  private:
   static const DocKey& DefaultStartDocKey();
 
@@ -140,6 +146,8 @@ class DocQLScanSpec : public QLScanSpec {
   // For filter: A in (..) AND (C, D) in (...) AND E in (...) where A, B, C, D, E are
   // range columns, range_options_num_cols_ will contain [1, 0, 2, 2, 1].
   std::vector<size_t> range_options_num_cols_;
+
+  ColGroupHolder range_options_groups_;
 
   // Does the scan include static columns also?
   const bool include_static_columns_;

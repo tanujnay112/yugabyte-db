@@ -337,8 +337,13 @@ typedef struct PlannerInfo
 	/* These fields are workspace for createplan.c */
 	Relids		curOuterRels;	/* outer rels above current node */
 	List	   *curOuterParams; /* not-yet-assigned NestLoopParams */
-	Relids		yb_curbatchedrelids; /* true if we are processing a batched
+
+	/* These are used to transfer information about batching in createplan.c
+	 * and indxpath.c */
+	Relids		yb_curbatchedrelids; /* valid if we are processing a batched
 								  	  * NL join */
+	Relids		yb_curunbatchedrelids;
+
 	int yb_cur_batch_no;		/* Used in replace_nestloop_params to keep
 								 * track of current batch */
 

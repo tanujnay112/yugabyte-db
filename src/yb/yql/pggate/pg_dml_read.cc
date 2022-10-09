@@ -423,33 +423,42 @@ Status PgDmlRead::BindColumnCondBetween(int attr_num, PgExpr *attr_value,
   return Status::OK();
 }
 
-Status PgDmlRead::BindColumnCondIn(int attr_num, int n_attr_values, PgExpr **attr_values) {
+Status PgDmlRead::BindColumnCondIn(PgExpr *lhs, int n_attr_values, PgExpr **attr_values) {
   if (secondary_index_query_) {
     // Bind by secondary key.
-    return secondary_index_query_->BindColumnCondIn(attr_num, n_attr_values, attr_values);
+    return secondary_index_query_->BindColumnCondIn(lhs, n_attr_values, attr_values);
   }
 
-  SCHECK(attr_num != static_cast<int>(PgSystemAttrNum::kYBTupleId),
-         InvalidArgument,
-         "Operator IN cannot be applied to ROWID");
+  int attr_num = -1;
+  bool col_is_primary = false;
 
-  // Find column.
-  PgColumn& col = VERIFY_RESULT(bind_.ColumnForAttr(attr_num));
+  if (lhs->is_colref()) {
+    attr_num = reinterpret_cast<PgColumnRef*>(lhs)->attr_num();
 
-  // Check datatype.
-  // TODO(neil) Current code combine TEXT and BINARY datatypes into ONE representation.  Once that
-  // is fixed, we can remove the special if() check for BINARY type.
-  if (col.internal_type() != InternalType::kBinaryValue) {
-    for (int i = 0; i < n_attr_values; i++) {
-      if (attr_values[i]) {
-        SCHECK_EQ(col.internal_type(), attr_values[i]->internal_type(), Corruption,
-            "Attribute value type does not match column type");
+    SCHECK(attr_num != static_cast<int>(PgSystemAttrNum::kYBTupleId),
+          InvalidArgument,
+          "Operator IN cannot be applied to ROWID");
+
+    // Find column.
+    PgColumn& col = VERIFY_RESULT(bind_.ColumnForAttr(attr_num));
+    col_is_primary = col.is_primary();
+
+    // Check datatype.
+    // TODO(neil) Current code combine TEXT and BINARY datatypes into ONE representation.  Once that
+    // is fixed, we can remove the special if() check for BINARY type.
+    if (col.internal_type() != InternalType::kBinaryValue) {
+      for (int i = 0; i < n_attr_values; i++) {
+        if (attr_values[i]) {
+          SCHECK_EQ(col.internal_type(), attr_values[i]->internal_type(), Corruption,
+              "Attribute value type does not match column type");
+        }
       }
     }
   }
 
-  if (col.is_primary()) {
+  if (lhs->is_colref() && col_is_primary) {
     // Alloc the protobuf.
+    PgColumn& col = VERIFY_RESULT(bind_.ColumnForAttr(attr_num));
     auto *bind_pb = col.bind_pb();
     if (bind_pb == nullptr) {
       bind_pb = AllocColumnBindPB(&col);
@@ -478,14 +487,16 @@ Status PgDmlRead::BindColumnCondIn(int attr_num, int n_attr_values, PgExpr **att
     }
   } else {
     // Alloc the protobuf.
-    auto* condition_expr_pb = AllocColumnBindConditionExprPB(&col);
+    // condition_expr_pb->mutable_condition()->add_operands()
+    auto condition_expr_pb = new LWPgsqlExpressionPB(&read_req_->arena());
 
     condition_expr_pb->mutable_condition()->set_op(QL_OP_IN);
 
     auto op1_pb = condition_expr_pb->mutable_condition()->add_operands();
     auto op2_pb = condition_expr_pb->mutable_condition()->add_operands();
+    op2_pb->mutable_condition()->set_op(QL_OP_OR);
 
-    op1_pb->set_column_id(col.id());
+    RETURN_NOT_OK(lhs->PrepareForRead(this, op1_pb));
 
     for (int i = 0; i < n_attr_values; i++) {
       // Link the given expression "attr_value" with the allocated protobuf.
@@ -498,9 +509,34 @@ Status PgDmlRead::BindColumnCondIn(int attr_num, int n_attr_values, PgExpr **att
       //     INSERT INTO a_table(hash, key, col) VALUES(?, ?, ?)
 
       if (attr_values[i]) {
-        RETURN_NOT_OK(attr_values[i]->EvalTo(
-            op2_pb->mutable_value()->mutable_list_value()->add_elems()));
+        auto elem = op2_pb->mutable_condition()->add_operands();
+        // RETURN_NOT_OK(attr_values[i]->PrepareForRead(this, elem));
+        RETURN_NOT_OK(attr_values[i]->EvalTo(elem));
       }
+    }
+
+    const auto &elems = reinterpret_cast<PgTupleExpr*>(lhs)->GetElems();
+
+    const PgColumnRef &firstcolref = *reinterpret_cast<const PgColumnRef*>(&*elems.begin());
+    auto firstcolattr = firstcolref.attr_num();
+    const PgColumn& firstcol = VERIFY_RESULT(bind_.ColumnForAttr(firstcolattr));
+    if (firstcol.is_partition()) {
+      for (const auto &elem : elems) {
+        const PgColumnRef &colref = *reinterpret_cast<const PgColumnRef*>(&elem);
+        auto colattr = colref.attr_num();
+        const PgColumn& curr_col = VERIFY_RESULT(bind_.ColumnForAttr(colattr));
+        if (!curr_col.is_partition())
+          continue;
+        auto it = read_req_->mutable_partition_column_values()->begin();
+        std::advance(it, colattr - 1);
+        *it = *condition_expr_pb;
+      }
+    } else {
+      // TODO: put this into another method
+      auto *condition_expr_pb1 = read_req_->mutable_condition_expr();
+      condition_expr_pb1->mutable_condition()->set_op(QL_OP_AND);
+      *condition_expr_pb1->mutable_condition()->add_operands()
+          = *condition_expr_pb;
     }
   }
   return Status::OK();

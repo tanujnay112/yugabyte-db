@@ -36,6 +36,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_type.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIndexscan.h"
 #include "lib/pairingheap.h"
@@ -1563,8 +1564,161 @@ ExecIndexBuildScanKeys(PlanState *planstate, Relation index,
 			/* sk_subtype, sk_collation, sk_func not used in a header */
 			this_scan_key->sk_argument = PointerGetDatum(first_sub_key);
 		}
+		else if (IsA(clause, ScalarArrayOpExpr) &&
+				 IsA(yb_get_saop_left_op(clause), RowExpr))
+		{
+			Assert(IsYugaByteEnabled());
+			/* indexkey op ANY (array-expression) */
+			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+			int			flags = 0;
+			Datum		scanvalue;
+
+			/* used when lhs is a RowExpr */
+			ScanKey		first_sub_key;
+			int			n_sub_key = 0;
+			int			total_keys;
+
+			Assert(!isorderby);
+
+			Assert(saop->useOr);
+			opno = saop->opno;
+			opfuncid = saop->opfuncid;
+
+			/*
+			 * leftop should be the index key Var, possibly relabeled
+			 */
+			leftop = (Expr *) linitial(saop->args);
+
+			if (leftop && IsA(leftop, RelabelType))
+				leftop = ((RelabelType *) leftop)->arg;
+
+			Assert(leftop != NULL);
+
+			ScanKey this_key = this_scan_key;
+
+			RowExpr *rexpr = (RowExpr *) leftop;
+
+			total_keys = list_length(rexpr->args);
+			first_sub_key = (ScanKey)
+				palloc0(total_keys * sizeof(ScanKeyData));
+			n_sub_key = 0;
+			this_key = first_sub_key;
+			flags |= SK_ROW_MEMBER;
+
+			/*
+			* We don't use ScanKeyEntryInitialize for the header because it
+			* isn't going to contain a valid sk_func pointer.
+			*/
+			MemSet(this_scan_key, 0, sizeof(ScanKeyData));
+			// shouldn't this only be the case if index->rd_amroutine->amsearcharray is true
+			this_scan_key->sk_flags = flags | SK_ROW_HEADER | SK_SEARCHARRAY;
+			this_scan_key->sk_strategy = BTEqualStrategyNumber;
+			/* sk_subtype, sk_collation, sk_func not used in a header */
+			this_scan_key->sk_argument = PointerGetDatum(first_sub_key);
+			this_scan_key->sk_subtype = RECORDOID;
+
+			do
+			{
+				RowExpr *rexpr = (RowExpr *) leftop;
+				varattno = ((Var *) list_nth(rexpr->args, n_sub_key))->varattno;
+				this_key = &first_sub_key[n_sub_key];
+				op_strategy = BTEqualStrategyNumber;
+				op_righttype = InvalidOid;
+				
+				if (varattno < 1 || varattno > indnkeyatts)
+					elog(ERROR, "bogus index qualification");
+
+				/*
+				* rightop is the constant or variable array value
+				*/
+				rightop = (Expr *) lsecond(saop->args);
+
+				if (rightop && IsA(rightop, RelabelType))
+					rightop = ((RelabelType *) rightop)->arg;
+
+				Assert(rightop != NULL);
+
+				if (index->rd_amroutine->amsearcharray)
+				{
+					/* Index AM will handle this like a simple operator */
+					flags |= SK_SEARCHARRAY;
+					if (IsA(rightop, Const))
+					{
+						/* OK, simple constant comparison value */
+						scanvalue = ((Const *) rightop)->constvalue;
+						if (((Const *) rightop)->constisnull)
+							flags |= SK_ISNULL;
+					}
+					else
+					{
+						/* Need to treat this one as a runtime key */
+						if (n_sub_key == 0)
+						{
+							if (n_runtime_keys >= max_runtime_keys)
+							{
+								if (max_runtime_keys == 0)
+								{
+									max_runtime_keys = 8;
+									runtime_keys = (IndexRuntimeKeyInfo *)
+										palloc(max_runtime_keys *
+											   sizeof(IndexRuntimeKeyInfo));
+								}
+								else
+								{
+									max_runtime_keys *= 2;
+									runtime_keys = (IndexRuntimeKeyInfo *)
+										repalloc(runtime_keys,
+												 max_runtime_keys *
+												 sizeof(IndexRuntimeKeyInfo));
+								}
+							}
+							runtime_keys[n_runtime_keys].scan_key = this_key;
+							runtime_keys[n_runtime_keys].key_expr = ExecInitExpr(rightop, planstate);
+
+							/*
+							* Careful here: the runtime expression is not of
+							* op_righttype, but rather is an array of same; so
+							* TypeIsToastable() isn't helpful.  However, we can
+							* assume that all array types are toastable.
+							*/
+							runtime_keys[n_runtime_keys].key_toastable = true;
+							n_runtime_keys++;
+							scanvalue = (Datum) 0;
+						}
+					}
+				}
+				else
+				{
+					/* Executor has to expand the array value */
+					array_keys[n_array_keys].scan_key = this_key;
+					array_keys[n_array_keys].array_expr =
+						ExecInitExpr(rightop, planstate);
+					/* the remaining fields were zeroed by palloc0 */
+					n_array_keys++;
+					scanvalue = (Datum) 0;
+				}
+
+				/*
+				* initialize the scan key's fields appropriately
+				*/
+				ScanKeyEntryInitialize(this_key,
+									   flags,
+									   varattno,  /* attribute number to scan */
+									   op_strategy, /* op's strategy */
+									   op_righttype,	/* strategy subtype */
+									   saop->inputcollid,	/* collation */
+									   opfuncid,	/* reg proc to use */
+									   scanvalue);	/* constant */
+				n_sub_key++;
+			}
+			while (n_sub_key < total_keys);
+			this_scan_key->sk_attno = first_sub_key->sk_attno;
+			/* Mark the last subsidiary scankey correctly */
+			first_sub_key[n_sub_key - 1].sk_flags |= SK_ROW_END;
+		}
 		else if (IsA(clause, ScalarArrayOpExpr))
 		{
+			Assert(IsA(yb_get_saop_left_op(clause), Var));
 			/* indexkey op ANY (array-expression) */
 			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
 			int			flags = 0;

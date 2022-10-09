@@ -871,5 +871,49 @@ Status PgOperator::PrepareForRead(PgDml *pg_stmt, LWPgsqlExpressionPB *expr_pb) 
   return Status::OK();
 }
 
+//--------------------------------------------------------------------------------------------------
+
+PgTupleExpr::PgTupleExpr(Arena* arena,
+                         const YBCPgTypeEntity* type_entity,
+                         const PgTypeAttrs *type_attrs,
+                         int num_elems,
+                         PgExpr *const *elems)
+  : PgExpr(Opcode::PG_EXPR_TUPLE_EXPR, type_entity, false, type_attrs),
+    elems_(arena),
+    ql_tuple_expr_value_(arena) {
+  for (int i = 0; i < num_elems; i++) {
+    elems_.push_back_ref(elems[i]);
+  }
+}
+
+Status PgTupleExpr::PrepareForRead(PgDml *pg_stmt, LWPgsqlExpressionPB *expr_pb) {
+  auto *tup_elems = expr_pb->mutable_tuple();
+  for (auto &elem : elems_) {
+    auto new_elem = tup_elems->add_elems();
+
+    if (elem.is_constant()) {
+      RETURN_NOT_OK(elem.EvalTo(new_elem->mutable_value()));
+    } else {
+      DCHECK(elem.is_colref());
+      PgColumnRef *cref = reinterpret_cast<PgColumnRef*>(&elem);
+      RETURN_NOT_OK(pg_stmt->PrepareColumnForRead(cref->attr_num(), new_elem));
+    }
+  }
+  return Status::OK();
+}
+
+Result<LWQLValuePB*> PgTupleExpr::Eval() {
+  auto *tup_elems = ql_tuple_expr_value_.mutable_tuple_value();
+  for (auto &elem : elems_) {
+    auto new_elem = tup_elems->add_elems();
+    if (elem.is_constant()) {
+      RETURN_NOT_OK(elem.EvalTo(new_elem));
+    } else {
+      return nullptr;
+    }
+  }
+  return &ql_tuple_expr_value_;
+}
+
 }  // namespace pggate
 }  // namespace yb

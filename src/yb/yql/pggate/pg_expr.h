@@ -61,6 +61,8 @@ class PgExpr {
     PG_EXPR_EVAL_EXPR_CALL,
 
     PG_EXPR_GENERATE_ROWID,
+
+    PG_EXPR_TUPLE_EXPR,
   };
 
   // Prepare expression when constructing a statement.
@@ -89,6 +91,11 @@ class PgExpr {
             opcode_ == Opcode::PG_EXPR_MAX ||
             opcode_ == Opcode::PG_EXPR_MIN);
   }
+
+  bool is_tuple_expr() const {
+    return opcode_ == Opcode::PG_EXPR_TUPLE_EXPR;
+  }
+
   virtual bool is_ybbasetid() const {
     return false;
   }
@@ -212,6 +219,25 @@ class PgOperator : public PgExpr {
  private:
   Slice opname_;
   ArenaList<PgExpr> args_;
+};
+
+class PgTupleExpr : public PgExpr {
+ public:
+  PgTupleExpr(Arena* arena,
+              const YBCPgTypeEntity* type_entity,
+              const PgTypeAttrs *type_attrs,
+              int num_elems,
+              PgExpr *const *elems);
+
+  Status PrepareForRead(PgDml *pg_stmt, LWPgsqlExpressionPB *expr_pb) override;
+
+  Result<LWQLValuePB*> Eval() override;
+
+  const ArenaList<PgExpr> &GetElems() { return elems_; }
+
+ private:
+  ArenaList<PgExpr> elems_;
+  LWQLValuePB ql_tuple_expr_value_;
 };
 
 }  // namespace pggate

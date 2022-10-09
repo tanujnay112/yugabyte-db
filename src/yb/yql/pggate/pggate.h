@@ -152,6 +152,10 @@ class PgApiImpl {
   Result<uint64_t> GetSharedCatalogVersion(std::optional<PgOid> db_oid = std::nullopt);
   uint64_t GetSharedAuthKey() const;
 
+  Status NewTupleExpr(
+    YBCPgStatement stmt, const YBCPgTypeAttrs *type_attrs, int num_elems,
+    const YBCPgExpr *elems, YBCPgExpr *expr_handle);
+
   // Setup the table to store sequences data.
   Status CreateSequencesDataTable();
 
@@ -388,9 +392,9 @@ class PgApiImpl {
                                   PgExpr *attr_value_end,
                                   bool end_inclusive);
   Status DmlBindColumnCondIn(YBCPgStatement handle,
-                             int attr_num,
+                             YBCPgExpr lhs,
                              int n_attr_values,
-                             YBCPgExpr *attr_value);
+                             YBCPgExpr *attr_values);
 
   Status DmlBindHashCode(
       PgStatement* handle, const std::optional<Bound>& start, const std::optional<Bound>& end);

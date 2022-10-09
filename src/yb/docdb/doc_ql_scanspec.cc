@@ -41,6 +41,7 @@ DocQLScanSpec::DocQLScanSpec(const Schema& schema,
       range_bounds_(nullptr),
       schema_(schema),
       hashed_components_(nullptr),
+      range_options_groups_(0),
       include_static_columns_(false),
       doc_key_(doc_key.Encode()),
       query_id_(query_id) {
@@ -63,6 +64,7 @@ DocQLScanSpec::DocQLScanSpec(
       hash_code_(hash_code),
       max_hash_code_(max_hash_code),
       hashed_components_(&hashed_components.get()),
+      range_options_groups_(schema_.num_range_key_columns()),
       include_static_columns_(include_static_columns),
       start_doc_key_(start_doc_key.empty() ? KeyBytes() : start_doc_key.Encode()),
       lower_doc_key_(bound_key(true)),
@@ -73,12 +75,14 @@ DocQLScanSpec::DocQLScanSpec(
         range_bounds_indexes_ = range_bounds_->GetColIds();
     }
 
+
     // If the hash key is fixed and we have range columns with IN condition, try to construct the
     // exact list of range options to scan for.
     if (!hashed_components_->empty() && schema_.num_range_key_columns() > 0 && range_bounds_ &&
         range_bounds_->has_in_range_options()) {
       DCHECK(condition);
       range_options_ = std::make_shared<std::vector<OptionList>>(schema_.num_range_key_columns());
+      range_options_num_cols_ = std::vector<size_t>(schema_.num_range_key_columns(), 0);
       range_options_num_cols_ = std::vector<size_t>(schema_.num_range_key_columns(), 0);
       InitRangeOptions(*condition);
 
@@ -137,7 +141,7 @@ void DocQLScanSpec::InitRangeOptions(const QLConditionPB& condition) {
 
       if (lhs.has_column_id()) {
         ColumnId col_id = ColumnId(lhs.column_id());
-        int col_idx = schema_.find_column_by_id(col_id);
+        size_t col_idx = schema_.find_column_by_id(col_id);
 
         // Skip any non-range columns.
         if (!schema_.is_range_column(col_idx)) {
@@ -145,6 +149,8 @@ void DocQLScanSpec::InitRangeOptions(const QLConditionPB& condition) {
         }
 
         range_options_num_cols_[col_idx - num_hash_cols] = 1;
+        range_options_groups_.BeginNewGroup();
+        range_options_groups_.AddToLatestGroup(col_idx - num_hash_cols);
         SortingType sorting_type = schema_.column(col_idx).sorting_type();
         // TODO: confusing - name says indexes but stores ids
         range_options_indexes_.emplace_back(col_id);
@@ -184,10 +190,12 @@ void DocQLScanSpec::InitRangeOptions(const QLConditionPB& condition) {
         }
 
         DCHECK(AreColumnsContinous(col_idxs));
+        range_options_groups_.BeginNewGroup();
 
         for (size_t i = 0; i < num_cols; i++) {
           range_options_indexes_.emplace_back(col_ids[i]);
           range_options_num_cols_[col_idxs[i] - num_hash_cols] = num_cols;
+          range_options_groups_.AddToLatestGroup(col_idxs[i] - num_hash_cols);
         }
 
         auto start_idx = *std::min_element(col_idxs.begin(), col_idxs.end());

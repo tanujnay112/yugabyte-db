@@ -29,6 +29,7 @@
 #include "partitioning/partbounds.h"
 #include "utils/hsearch.h"
 
+#include "pg_yb_utils.h"
 
 typedef struct JoinHashEntry
 {
@@ -1259,8 +1260,20 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	Assert(!bms_overlap(baserel->relids, required_outer));
 
 	/* If we already have a PPI for this parameterization, just return it */
-	if ((ppi = find_param_path_info(baserel, required_outer)))
-		return ppi;
+	if (IsYugaByteEnabled())
+	{
+		if ((ppi =
+			 yb_find_batched_param_path_info(baserel,
+											 required_outer,
+											 root->yb_curbatchedrelids,
+											 root->yb_curunbatchedrelids)))
+			return ppi;
+	}
+	else
+	{
+		if ((ppi = find_param_path_info(baserel, required_outer)))
+			return ppi;
+	}
 
 	/*
 	 * Identify all joinclauses that are movable to this base rel given this

@@ -25,6 +25,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/typcache.h"
 
 
 typedef struct BTSortArrayContext
@@ -471,6 +472,12 @@ _bt_sort_array_elements(IndexScanDesc scan, ScanKey skey,
 								 elemtype,
 								 elemtype,
 								 BTORDER_PROC);
+	if (IsYugaByteEnabled() && !RegProcedureIsValid(cmp_proc))
+	{
+		TypeCacheEntry *typentry =
+			lookup_type_cache(elemtype, TYPECACHE_CMP_PROC);
+		cmp_proc = typentry->cmp_proc;
+	}
 	if (!RegProcedureIsValid(cmp_proc))
 		elog(ERROR, "missing support function %d(%u,%u) in opfamily %u",
 			 BTORDER_PROC, elemtype, elemtype,

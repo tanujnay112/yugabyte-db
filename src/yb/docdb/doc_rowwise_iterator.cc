@@ -51,6 +51,7 @@
 
 #include "yb/rocksdb/db.h"
 
+#include "yb/util/col_group.h"
 #include "yb/util/flag_tags.h"
 #include "yb/util/logging.h"
 #include "yb/util/result.h"
@@ -360,6 +361,8 @@ Status DiscreteScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
   return Status::OK();
 }
 
+// TODO: clarify option index, option_list_idx nomenclature....
+
 // This class combines the notions of option filters (col1 IN (1,2,3)) and
 // singular range bound filters (col1 < 4 AND col1 >= 1) into a single notion of
 // lists of options of ranges, each encoded by an OptionRange instance as
@@ -367,6 +370,10 @@ Status DiscreteScanChoices::SeekToCurrentTarget(IntentAwareIterator* db_iter) {
 // Doc(QL/PGSQL)ScanSpec is converted into an OptionRange.
 // In the end, each HybridScanChoices
 // instance should have a sorted list of disjoint ranges for every IN/EQ clause.
+// Each OptionRange has a begin_idx_ and an end_idx_. This is used to implement
+// a mini run-length encoding for duplicate OptionRange values. A particular
+// OptionRange with Range [lower, upper] implies that that range applies for
+// all option indexes in [begin_idx_, end_idx_).
 // Right now this supports a conjunction of range bound and discrete filters.
 // Disjunctions are also supported but are UNTESTED.
 // TODO: Test disjunctions when YSQL and YQL support pushing those down
@@ -379,7 +386,21 @@ class OptionRange {
       : lower_(lower),
         lower_inclusive_(lower_inclusive),
         upper_(upper),
-        upper_inclusive_(upper_inclusive) {
+        upper_inclusive_(upper_inclusive),
+        begin_idx_(0),
+        end_idx_(0) {
+    DCHECK(lower.size() == upper.size());
+  }
+
+  OptionRange(
+      std::vector<KeyEntryValue> lower, bool lower_inclusive, std::vector<KeyEntryValue> upper,
+      bool upper_inclusive, size_t begin_idx, size_t end_idx)
+      : lower_(lower),
+        lower_inclusive_(lower_inclusive),
+        upper_(upper),
+        upper_inclusive_(upper_inclusive),
+        begin_idx_(begin_idx),
+        end_idx_(end_idx) {
     DCHECK(lower.size() == upper.size());
   }
 
@@ -388,6 +409,14 @@ class OptionRange {
   const std::vector<KeyEntryValue>& upper() const { return upper_; }
   bool upper_inclusive() const { return upper_inclusive_; }
   size_t size() const { return lower_.size(); }
+
+  void set_begin_end_idxs(size_t begin, size_t end) {
+    begin_idx_ = begin;
+    end_idx_ = end;
+  }
+
+  size_t begin_idx() const { return begin_idx_; }
+  size_t end_idx() const { return end_idx_; }
 
   static bool upper_lt(const OptionRange& range1, const OptionRange& range2) {
     DCHECK(range1.size() == range2.size());
@@ -400,11 +429,19 @@ class OptionRange {
     return range1.lower_ > range2.lower_;
   }
 
+  static bool end_idx_leq(const OptionRange &range1,
+                         const OptionRange &range2) {
+    return range1.end_idx_ <= range2.end_idx_;
+  }
+
  private:
   std::vector<KeyEntryValue> lower_;
   bool lower_inclusive_;
   std::vector<KeyEntryValue> upper_;
   bool upper_inclusive_;
+
+  size_t begin_idx_;
+  size_t end_idx_;
 };
 
 class HybridScanChoices : public ScanChoices {
@@ -423,8 +460,11 @@ class HybridScanChoices : public ScanChoices {
                     const std::shared_ptr<std::vector<OptionList>>& range_options,
                     const std::vector<ColumnId>& range_bounds_col_ids,
                     const QLScanRange* range_bounds,
-                    const std::vector<size_t>& range_options_num_cols)
-      : ScanChoices(is_forward_scan), lower_doc_key_(lower_doc_key), upper_doc_key_(upper_doc_key) {
+                    const std::vector<size_t>& range_options_num_cols,
+                    const ColGroupHolder& col_groups)
+      : ScanChoices(is_forward_scan), lower_doc_key_(lower_doc_key),
+        upper_doc_key_(upper_doc_key), col_groups_(col_groups) {
+
     size_t num_hash_cols = schema.num_hash_key_columns();
 
     for (size_t idx = num_hash_cols; idx < schema.num_key_columns(); idx++) {
@@ -449,10 +489,19 @@ class HybridScanChoices : public ScanChoices {
             std::vector{lower},
             GetQLRangeBoundIsInclusive(range, col_sort_type, true),
             std::vector{upper},
-            GetQLRangeBoundIsInclusive(range, col_sort_type, false));
+            GetQLRangeBoundIsInclusive(range, col_sort_type, false),
+            current_options.size(),
+            current_options.size() + 1);
+
+        col_groups_.BeginNewGroup();
+        col_groups_.AddToLatestGroup(range_cols_scan_options_.size());
+
       } else if (col_has_range_option) {
         num_cols = range_options_num_cols[idx - num_hash_cols];
         auto& options = (*range_options)[idx - num_hash_cols];
+
+        col_groups_.BeginNewGroup();
+        col_groups_.AddToLatestGroup(range_cols_scan_options_.size());
 
         if (options.empty()) {
           // If there is nothing specified in the IN list like in
@@ -466,11 +515,25 @@ class HybridScanChoices : public ScanChoices {
               std::vector(num_cols, KeyEntryValue(KeyEntryType::kHighest)),
               true,
               std::vector(num_cols, KeyEntryValue(KeyEntryType::kLowest)),
-              true);
-        }
+              true,
+              current_options.size(),
+              current_options.size() + 1);
+        } else {
+          auto last_option = *options.begin();
+          auto begin = 0;
+          auto current_ind = 0;
 
-        for (const auto& option : options) {
-          current_options.emplace_back(option, true, option, true);
+          for (auto option : options) {
+            if (option != last_option) {
+              current_options.emplace_back(last_option, true, last_option,
+                                           true, begin, current_ind);
+              last_option = option;
+              begin = current_ind;
+            }
+            current_ind++;
+          }
+          current_options.emplace_back(last_option, true, last_option,
+                                       true, begin, current_ind);
         }
         idx = idx + num_cols - 1;
       } else {
@@ -480,7 +543,9 @@ class HybridScanChoices : public ScanChoices {
             std::vector{KeyEntryValue(KeyEntryType::kLowest)},
             true,
             std::vector{KeyEntryValue(KeyEntryType::kHighest)},
-            true);
+            true,
+            current_options.size(),
+            current_options.size() + 1);
       }
       range_cols_scan_options_.push_back(current_options);
       // For IN/EQ clause at index i,
@@ -508,7 +573,7 @@ class HybridScanChoices : public ScanChoices {
             schema, lower_doc_key, upper_doc_key, doc_spec.is_forward_scan(),
             doc_spec.range_options_indexes(), doc_spec.range_options(),
             doc_spec.range_bounds_indexes(), doc_spec.range_bounds(),
-            doc_spec.range_options_num_cols()) {}
+            doc_spec.range_options_num_cols(), doc_spec.range_options_groups()) {}
 
   HybridScanChoices(const Schema& schema,
                     const DocQLScanSpec& doc_spec,
@@ -518,7 +583,7 @@ class HybridScanChoices : public ScanChoices {
             schema, lower_doc_key, upper_doc_key, doc_spec.is_forward_scan(),
             doc_spec.range_options_indexes(), doc_spec.range_options(),
             doc_spec.range_bounds_indexes(), doc_spec.range_bounds(),
-            doc_spec.range_options_num_cols()) {}
+            doc_spec.range_options_num_cols(), doc_spec.range_options_groups()) {}
 
   Status SkipTargetsUpTo(const Slice& new_target) override;
   Status DoneWithCurrentTarget() override;
@@ -531,8 +596,19 @@ class HybridScanChoices : public ScanChoices {
   // it means we are done, so it clears the scan target idxs array.
   Status IncrementScanTargetAtOptionList(int start_option_list_idx);
 
+  std::vector<OptionRange>::const_iterator GetSearchSpaceLowerBound(size_t col_idx);
+
+  std::vector<OptionRange>::const_iterator GetSearchSpaceUpperBound(size_t col_idx);
+
+  size_t GetOptIndex(size_t col_idx);
+  void SetOptToIndex(size_t opt_list_idx, size_t opt_index);
+  void SetGroup(size_t opt_list_idx, size_t opt_index);
+
  private:
   KeyBytes prev_scan_target_;
+
+  // The following fields aid in the goal of iterating through all possible
+  // scan key values based on given IN-lists and range filters.
 
   // The following encodes the list of ranges we are iterating over
   std::vector<std::vector<OptionRange>> range_cols_scan_options_;
@@ -549,10 +625,95 @@ class HybridScanChoices : public ScanChoices {
   const KeyBytes lower_doc_key_;
   const KeyBytes upper_doc_key_;
 
-  // For every set of range options, stores the number of columns involved
+  // When we have tuple IN filters such as (r1,r3) IN ((1,3), (2,5) ...) where
+  // (r1,r2,r3) is the index key, we cannot simply just populate
+  // range_cols_scan_options_ with the values r1 -> {[1,1], [2,2]...} and
+  // r3 -> {[3,3], [5,5]...}. This by itself implies that (r1,r3) = (1,5) is allowed.
+  // In order to account for this case, we must introduce the possiblity of correlations amongst
+  // key expressions. In order to achieve this, we put key expressions into "groups".
+  // In the above example, we must put r1 and r3 into one such group and r2 into another by itself.
+  // col_groups_ holds these groups. We maintain that all the key expressions in a group.
+  // are on the same option index at any given time.
+  // For example: Say (r1,r2,r3) is the index key.
+  // If we received a filter of the form (r1,r3) IN ((1,3), (2,5)) AND r2 IN (4,6)
+  // We would have groups [[0,2], [1]]
+  // The scan keys we would iterate over would be
+  // (1,4,3), (1,6,3), (2,4,3), (2,6,3)
+  ColGroupHolder col_groups_;
+  // For every set of range options, stores the number of expressions involved
   // (the number of columns can be more than one with the support for multi-column operations)
   std::vector<size_t> range_options_num_cols_;
 };
+
+std::vector<OptionRange>::const_iterator
+HybridScanChoices::GetSearchSpaceLowerBound(size_t col_idx) {
+  auto group = col_groups_.GetGroup(col_idx);
+  size_t prev_idx = -1;
+  bool prev_set = false;
+  for (auto elem : group) {
+    if (elem == col_idx)
+      break;
+
+    prev_set = true;
+    prev_idx = elem;
+  }
+
+  if (!prev_set)
+    return range_cols_scan_options_[col_idx].begin();
+
+  auto prev_col_option = current_scan_target_ranges_[prev_idx];
+  return range_cols_scan_options_[col_idx].begin() + prev_col_option->begin_idx();
+}
+
+std::vector<OptionRange>::const_iterator
+HybridScanChoices::GetSearchSpaceUpperBound(size_t col_idx) {
+  auto group = col_groups_.GetGroup(col_idx);
+  size_t prev_idx = -1;
+  bool prev_set = false;
+  for (auto elem : group) {
+    if (elem == col_idx)
+      break;
+
+    prev_set = true;
+    prev_idx = elem;
+  }
+
+  if (!prev_set)
+    return range_cols_scan_options_[col_idx].end();
+
+  auto prev_col_option = current_scan_target_ranges_[prev_idx];
+  return range_cols_scan_options_[col_idx].begin() + prev_col_option->end_idx();
+}
+
+size_t HybridScanChoices::GetOptIndex(size_t col_idx) {
+  auto group = col_groups_.GetGroup(col_idx);
+  auto last_col_idx = group.back();
+  return current_scan_target_ranges_[last_col_idx] - range_cols_scan_options_[last_col_idx].begin();
+}
+
+void HybridScanChoices::SetOptToIndex(size_t opt_list_idx, size_t opt_index) {
+  if (col_groups_.GetGroup(opt_list_idx).back() == opt_list_idx) {
+    current_scan_target_ranges_[opt_list_idx] =
+      range_cols_scan_options_[opt_list_idx].begin() + opt_index;
+    DCHECK(current_scan_target_ranges_[opt_list_idx] !=
+           range_cols_scan_options_[opt_list_idx].end());
+    return;
+  }
+  OptionRange target_value_range({}, true, {}, true, opt_index, opt_index);
+  auto option_it = std::lower_bound(range_cols_scan_options_[opt_list_idx].begin(),
+                                    range_cols_scan_options_[opt_list_idx].end(),
+                                    target_value_range,
+                                    OptionRange::end_idx_leq);
+  DCHECK(option_it != range_cols_scan_options_[opt_list_idx].end());
+  current_scan_target_ranges_[opt_list_idx] = option_it;
+}
+
+void HybridScanChoices::SetGroup(size_t opt_list_idx, size_t opt_index) {
+  auto group = col_groups_.GetGroup(opt_list_idx);
+  for (auto elem : group) {
+    SetOptToIndex(elem, opt_index);
+  }
+}
 
 // Sets current_scan_target_ to the first tuple in the filter space
 // that is >= new_target.
@@ -677,16 +838,19 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
     auto it = options.begin();
 
     // Find an upper (lower) bound closest to target_value
+    auto begin = GetSearchSpaceLowerBound(option_list_idx);
+    auto end = GetSearchSpaceUpperBound(option_list_idx);
+
     OptionRange target_value_range(target_value, true, target_value, true);
     if (is_forward_scan_) {
       it = std::lower_bound(
-          options.begin(), options.end(), target_value_range, OptionRange::upper_lt);
+          begin, end, target_value_range, OptionRange::upper_lt);
     } else {
       it = std::lower_bound(
-          options.begin(), options.end(), target_value_range, OptionRange::lower_gt);
+          begin, end, target_value_range, OptionRange::lower_gt);
     }
 
-    if (it == options.end()) {
+    if (it == end) {
       // target value is higher than all range options and
       // we need to increment.
       RETURN_NOT_OK(IncrementScanTargetAtOptionList(static_cast<int>(option_list_idx) - 1));
@@ -694,7 +858,9 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
       break;
     }
 
-    current_scan_target_ranges_[option_list_idx] = it;
+    size_t idx = is_forward_scan_? it->begin_idx() : it->end_idx() - 1;
+
+    SetGroup(option_list_idx, idx);
 
     // If we are within a range then target_value itself should work
 
@@ -777,7 +943,10 @@ Status HybridScanChoices::SkipTargetsUpTo(const Slice& new_target) {
   // Reset the remaining range columns to lower bounds for forward scans
   // or upper bounds for backward scans.
   for (size_t i = option_list_idx; i < range_cols_scan_options_.size(); i++) {
-    current_scan_target_ranges_[i] = range_cols_scan_options_[i].begin();
+    auto begin = GetSearchSpaceLowerBound(i);
+    size_t idx = is_forward_scan_ ? begin->begin_idx() : begin->end_idx() - 1;
+    SetGroup(i, idx);
+
     if (is_forward_scan_) {
       AppendToKey(current_scan_target_ranges_[i]->lower(), &current_scan_target_);
     } else {
@@ -857,17 +1026,24 @@ Status HybridScanChoices::IncrementScanTargetAtOptionList(int start_option_list_
   bool start_with_infinity = true;
 
   for (; option_list_idx >= 0; option_list_idx--) {
-    auto& it = current_scan_target_ranges_[option_list_idx];
-
     if (!is_extremal[option_list_idx]) {
       option_list_idx++;
       start_with_infinity = true;
       break;
     }
 
-    if (++it != range_cols_scan_options_[option_list_idx].end()) {
+    auto end = GetSearchSpaceUpperBound(option_list_idx);
+
+    auto& it = current_scan_target_ranges_[option_list_idx];
+    ++it;
+
+    if (it != end) {
       // and if this value is at the extremal bound
       DCHECK(is_extremal[option_list_idx]);
+
+      size_t idx = is_forward_scan_ ? it->begin_idx() : it->end_idx() - 1;
+      SetGroup(option_list_idx, idx);
+      DCHECK(it != range_cols_scan_options_[option_list_idx].end());
       // if we are AT the boundary of a strict bound then we
       // want to append an infinity after this column to satisfy
       // the strict bound requirement
@@ -878,8 +1054,11 @@ Status HybridScanChoices::IncrementScanTargetAtOptionList(int start_option_list_
       break;
     }
 
-    current_scan_target_ranges_[option_list_idx] =
-        range_cols_scan_options_[option_list_idx].begin();
+    auto begin = GetSearchSpaceLowerBound(option_list_idx);
+
+    // If it == end then we move onto incrementing the next column
+    size_t idx = is_forward_scan_ ? begin->begin_idx() : begin->end_idx() - 1;
+    SetGroup(option_list_idx, idx);
   }
 
   DocKeyDecoder decoder(current_scan_target_);
@@ -911,6 +1090,8 @@ Status HybridScanChoices::IncrementScanTargetAtOptionList(int start_option_list_
 
   if (start_with_infinity) {
     // there's no point in appending anything after infinity
+    VLOG_WITH_FUNC(2) << "Key after increment is "
+                      << DocKey::DebugSliceToString(current_scan_target_);
     return Status::OK();
   }
 
@@ -919,9 +1100,14 @@ Status HybridScanChoices::IncrementScanTargetAtOptionList(int start_option_list_
   // have been the case that we got here via an increment on col_idx
   int64 current_scan_target_ranges_size = static_cast<int64>(current_scan_target_ranges_.size());
   for (int i = option_list_idx; i < current_scan_target_ranges_size; ++i) {
-    auto it_0 = i == option_list_idx ? current_scan_target_ranges_[option_list_idx]
-                                     : range_cols_scan_options_[i].begin();
-    current_scan_target_ranges_[i] = it_0;
+    auto begin = GetSearchSpaceLowerBound(i);
+    auto it_0 = i == option_list_idx ? current_scan_target_ranges_[i]
+                                     : begin;
+    // Potentially setting a group twice here but that can be easily dealt
+    // with if necessary.
+    size_t idx = is_forward_scan_ ? it_0->begin_idx() : it_0->end_idx() - 1;
+    SetGroup(i, idx);
+
     AppendToKey(lower_extremal_fn(*it_0), &current_scan_target_);
     if (!lower_extremal_incl_fn(*it_0)) {
       if (is_forward_scan_) {
@@ -934,6 +1120,8 @@ Status HybridScanChoices::IncrementScanTargetAtOptionList(int start_option_list_
     }
   }
 
+  VLOG_WITH_FUNC(2) << "Key after increment is "
+                    << DocKey::DebugSliceToString(current_scan_target_);
   return Status::OK();
 }
 

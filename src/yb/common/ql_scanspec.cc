@@ -49,6 +49,18 @@ struct ColumnValue {
   }
 };
 
+QLValuePB GetDeepCopy(const QLValuePB *qlval) {
+  QLValuePB copy;
+  copy.CopyFrom(*qlval);
+  return copy;
+}
+
+LWQLValuePB GetDeepCopy(const LWQLValuePB *qlval) {
+  QLValuePB qlcopy;
+  qlcopy.CopyFrom(qlval->ToGoogleProtobuf());
+  return LWQLValuePB(&qlval->arena(), qlcopy);
+}
+
 template <class Col>
 auto GetColumnValue(const Col& col) {
   CHECK_EQ(col.size(), 2);
@@ -101,18 +113,6 @@ auto GetColumnValue(const Col& col) {
   }
   return ResultType();
 }
-
-namespace {
-
-LWQLValuePB CopyValue(const LWQLValuePB& source) {
-  return LWQLValuePB(&source.arena(), source);
-}
-
-QLValuePB CopyValue(const QLValuePB& source) {
-  return QLValuePB(source);
-}
-
-} // namespace
 
 template <class Cond>
 void QLScanRange::Init(const Cond& condition) {
@@ -300,8 +300,8 @@ void QLScanRange::Init(const Cond& condition) {
               size_t num_cols = col_ids.size();
               auto options_itr = options.begin();
 
-              auto lower = CopyValue(*options.begin());
-              auto upper = CopyValue(*options.begin());
+              auto lower = GetDeepCopy(&*options.begin());
+              auto upper = GetDeepCopy(&*options.begin());
 
               while(options_itr != options.end()) {
                 DCHECK(options_itr->has_tuple_value());

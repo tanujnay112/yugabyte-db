@@ -674,6 +674,9 @@ struct MinimalTupleData
 #define HeapTupleHasNulls(tuple) \
 		(((tuple)->t_data->t_infomask & HEAP_HASNULL) != 0)
 
+#define HeapTupleHeaderHasNulls(tuple) \
+		(((tuple)->t_infomask & HEAP_HASNULL) != 0)
+
 #define HeapTupleNoNulls(tuple) \
 		(!((tuple)->t_data->t_infomask & HEAP_HASNULL))
 
@@ -822,6 +825,8 @@ extern HeapTuple heap_modify_tuple_by_cols(HeapTuple tuple,
 						  int *replCols,
 						  Datum *replValues,
 						  bool *replIsnull);
+extern void heap_deform_tuple_header(HeapTupleHeader tup, TupleDesc tupleDesc,
+				  					 Datum *values, bool *isnull);
 extern void heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
 				  Datum *values, bool *isnull);
 extern void heap_freetuple(HeapTuple htup);
