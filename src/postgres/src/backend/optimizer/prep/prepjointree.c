@@ -917,6 +917,7 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	subroot->hasRecursion = false;
 	subroot->yb_curbatchedrelids = NULL;
 	subroot->yb_curunbatchedrelids = NULL;
+	subroot->yb_availBatchedRelids = NULL;
 	subroot->yb_cur_batch_no = -1;
 	subroot->wt_param_id = -1;
 	subroot->non_recursive_path = NULL;
